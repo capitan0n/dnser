@@ -128,13 +128,27 @@ def _active_config_keys(path: Path) -> list[str]:
 
 
 def _line_starts_with_any(line: str, keys: tuple[str, ...]) -> bool:
-    """Return True if `line` starts with any of the given keys.
+    """Return True if the line's config key matches any of `keys`.
 
-    We match against the line START (not `in`) because ini keys always
-    appear at the beginning of a line. Substring matching produces false
-    positives like `MulticastDNS=no` matching `DNS=`.
+    A "key match" means the key appears either:
+      - at the very start of the line: 'DNS=9.9.9.9' matches 'DNS='
+      - or right after a dotted prefix: 'ipv4.ignore-auto-dns=true' matches
+        'ignore-auto-dns' (NM uses dotted namespaces like ipv4.*, ipv6.*)
+
+    Substring `in` is not enough because 'DNS=' would match inside
+    'MulticastDNS=no'. Bare startswith is not enough because
+    'ipv4.ignore-auto-dns' wouldn't match 'ignore-auto-dns'.
     """
-    return any(line.startswith(key) for key in keys)
+    for key in keys:
+        if line.startswith(key):
+            return True
+        # Handle NM's dotted keys: strip everything up to and including
+        # the last dot before comparing.
+        if "." in line:
+            _, _, after_dot = line.rpartition(".")
+            if after_dot.startswith(key):
+                return True
+    return False
 
 
 def _file_has_any_keys(path: Path, keys: tuple[str, ...]) -> bool:

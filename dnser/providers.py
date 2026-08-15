@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -81,12 +82,18 @@ def load_providers() -> dict[str, Provider]:
         if not isinstance(data, dict):
             raise ProviderError(f"Provider '{key}': expected an object, got {type(data).__name__}")
         try:
+            ipv4 = list(data.get("ipv4", []))
+            ipv6 = list(data.get("ipv6", []))
+            # Validate every IP before accepting the provider. Catching
+            # typos here beats a cryptic nmcli/resolvectl failure later.
+            _validate_ips(key, ipv4, expected_version=4)
+            _validate_ips(key, ipv6, expected_version=6)
             providers[key] = Provider(
                 key=key,
                 name=data.get("name", key.title()),
                 description=data.get("description", ""),
-                ipv4=list(data.get("ipv4", [])),
-                ipv6=list(data.get("ipv6", [])),
+                ipv4=ipv4,
+                ipv6=ipv6,
                 dot_hostname=data.get("dot_hostname"),
                 doh_url=data.get("doh_url"),
             )
@@ -97,6 +104,50 @@ def load_providers() -> dict[str, Provider]:
         raise ProviderError(f"No providers defined in {config_path}")
 
     return providers
+
+
+def _validate_ips(provider_key: str, ips: list[str], expected_version: int) -> None:
+    """Raise ProviderError if any IP is malformed or of the wrong family.
+
+    expected_version: 4 for the ipv4 field, 6 for ipv6.
+    """
+    for ip in ips:
+        try:
+            parsed = ipaddress.ip_address(ip)
+        except ValueError as e:
+            raise ProviderError(
+                f"Provider '{provider_key}': '{ip}' is not a valid IP address ({e})."
+            ) from e
+        if parsed.version != expected_version:
+            raise ProviderError(
+                f"Provider '{provider_key}': '{ip}' is IPv{parsed.version}, "
+                f"but appears in the ipv{expected_version} list."
+            )
+
+
+def identify_provider(ips: list[str]) -> str | None:
+    """Return the provider key whose IP list contains any of `ips`, else None.
+
+    Strips DoT '#hostname' suffixes before comparing. Matches on ANY common
+    IP — providers rarely share IPs, so a single match is enough to identify.
+    Returns None if no bundled/user provider matches.
+    """
+    if not ips:
+        return None
+
+    # Normalize input: strip any '#hostname' suffix used for DoT.
+    plain_ips = {ip.split("#", 1)[0] for ip in ips}
+
+    try:
+        providers = load_providers()
+    except ProviderError:
+        return None
+
+    for key, provider in providers.items():
+        provider_ips = set(provider.ipv4) | set(provider.ipv6)
+        if plain_ips & provider_ips:
+            return key
+    return None
 
 
 def get_config_path() -> Path:

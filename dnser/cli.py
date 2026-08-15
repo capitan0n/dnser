@@ -23,6 +23,26 @@ console = Console()
 err_console = Console(stderr=True, style="bold red")
 
 
+def _split_backup_name(stem: str) -> tuple[str, str]:
+    """Split a backup filename stem into (label, timestamp).
+
+    Filenames look like 'quad9_20260815T222325Z' or legacy '20260815T222325Z'.
+    We split on the LAST underscore because provider keys may contain
+    underscores themselves (e.g. 'my_custom_provider').
+
+    Legacy backups without a label return ('-', timestamp).
+    """
+    if "_" not in stem:
+        # Legacy naming: timestamp only
+        return ("-", stem)
+    label, _, timestamp = stem.rpartition("_")
+    # Sanity check: a real timestamp starts with 8 digits (YYYYMMDD).
+    # If it doesn't, treat the whole stem as label (unusual edge case).
+    if len(timestamp) < 8 or not timestamp[:8].isdigit():
+        return (stem, "-")
+    return (label, timestamp)
+
+
 # ----------------------------------------------------------------------
 # Command handlers
 # ----------------------------------------------------------------------
@@ -32,7 +52,12 @@ def cmd_status(_args: argparse.Namespace) -> int:
     backend = active_backend()
     if backend is None:
         err_console.print("No supported DNS backend detected on this system.")
-        err_console.print("Run `dnser backends` to see what dnser looked for.")
+        err_console.print(
+            "[dim]dnser needs one of: NetworkManager (nmcli) or systemd-resolved.[/dim]"
+        )
+        err_console.print(
+            "[dim]run `dnser backends` to see which are installed but inactive.[/dim]"
+        )
         return 1
 
     console.print(f"[bold]Active backend:[/bold] {backend.display_name}")
@@ -147,12 +172,15 @@ def cmd_set(args: argparse.Namespace) -> int:
         scope = Scope.CURRENT
 
     # 4. Snapshot first — never mutate without a way back.
+    #    Label the backup by what's in it (i.e. the state we can restore to),
+    #    not by what's about to replace it.
     try:
         snap = backend.snapshot()
+        label = backend.describe_current_state()
     except BackendError as e:
         err_console.print(f"Failed to take backup snapshot: {e}")
         return 1
-    backup_path = backup.save(snap)
+    backup_path = backup.save(snap, label=label)
 
     # 5. Apply.
     if args.dot:
@@ -196,22 +224,30 @@ def cmd_restore(args: argparse.Namespace) -> int:
             return 0
         table = Table(show_header=True, header_style="bold cyan")
         table.add_column("#", justify="right")
+        table.add_column("Label")
         table.add_column("Timestamp")
         table.add_column("Backend")
         for i, path in enumerate(backups):
             payload = backup.load(path)
-            table.add_row(str(i), path.stem, payload.backend_name)
+            label, timestamp = _split_backup_name(path.stem)
+            table.add_row(str(i), label, timestamp, payload.backend_name)
         console.print(table)
         return 0
 
     if not backups:
         err_console.print("No backups to restore from.")
+        err_console.print(
+            "[dim]backups are created automatically when you run `dnser set`.[/dim]"
+        )
         return 1
 
     # Default: latest (index 0). --index N picks an older one.
     index = args.index if args.index is not None else 0
     if index < 0 or index >= len(backups):
-        err_console.print(f"Invalid index: {index}. Valid range: 0..{len(backups)-1}")
+        err_console.print(
+            f"Invalid backup index: {index}. Valid range: 0..{len(backups) - 1}"
+        )
+        err_console.print("[dim]run `dnser restore --list` to see available backups.[/dim]")
         return 1
 
     payload = backup.load(backups[index])
@@ -223,8 +259,17 @@ def cmd_restore(args: argparse.Namespace) -> int:
 
     if payload.backend_name != backend.name:
         err_console.print(
-            f"Backup was taken with backend '{payload.backend_name}', "
+            f"Cannot restore: backup was taken with backend '{payload.backend_name}', "
             f"but active backend is '{backend.name}'."
+        )
+        err_console.print(
+            "[dim]this happens when the system's DNS management changed since the backup.[/dim]"
+        )
+        err_console.print(
+            "[dim]run `dnser restore --list` to find a backup matching the current backend,[/dim]"
+        )
+        err_console.print(
+            "[dim]or restore manually via nmcli / resolvectl.[/dim]"
         )
         return 1
 

@@ -44,6 +44,31 @@ class TestLineStartsWithAny:
         assert _line_starts_with_any(line, self.keys) is False
 
 
+class TestDottedKeys:
+    """NM uses dotted key notation like ipv4.ignore-auto-dns=true.
+
+    The matcher must recognize these as keys even though the line doesn't
+    start with the bare key name.
+    """
+    conflict_keys = ("servers=", "ignore-auto-dns")
+
+    @pytest.mark.parametrize("line", [
+        "ipv4.ignore-auto-dns=true",
+        "ipv6.ignore-auto-dns=yes",
+        "servers=1.1.1.1;1.0.0.1;",
+    ])
+    def test_matches_dotted_and_bare_keys(self, line):
+        assert _line_starts_with_any(line, self.conflict_keys) is True
+
+    @pytest.mark.parametrize("line", [
+        "dns=systemd-resolved",      # integration key, not a conflict
+        "systemd-resolved=true",     # integration key, not a conflict
+        "connection.autoconnect=yes", # unrelated dotted key
+    ])
+    def test_does_not_match_unrelated_dotted_keys(self, line):
+        assert _line_starts_with_any(line, self.conflict_keys) is False
+
+
 # ----------------------------------------------------------------------
 # Unit: file scanning
 # ----------------------------------------------------------------------

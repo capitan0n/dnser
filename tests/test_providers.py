@@ -59,3 +59,43 @@ def test_empty_providers_file_raises(tmp_path, monkeypatch):
     monkeypatch.setattr("dnser.providers._USER_CONFIG", empty)
     with pytest.raises(ProviderError, match="No providers defined"):
         load_providers()
+
+
+# ----------------------------------------------------------------------
+# IP validation
+# ----------------------------------------------------------------------
+
+def test_invalid_ipv4_raises(tmp_path, monkeypatch):
+    bad = tmp_path / "providers.json"
+    bad.write_text(json.dumps({
+        "bad": {"name": "Bad", "ipv4": ["not-an-ip"]}
+    }))
+    monkeypatch.setattr("dnser.providers._USER_CONFIG", bad)
+    with pytest.raises(ProviderError, match="not a valid IP"):
+        load_providers()
+
+
+def test_ipv6_in_ipv4_field_raises(tmp_path, monkeypatch):
+    """A common typo: putting an IPv6 address in the ipv4 list."""
+    bad = tmp_path / "providers.json"
+    bad.write_text(json.dumps({
+        "bad": {"name": "Bad", "ipv4": ["2606:4700:4700::1111"]}
+    }))
+    monkeypatch.setattr("dnser.providers._USER_CONFIG", bad)
+    with pytest.raises(ProviderError, match="IPv6, but appears in the ipv4 list"):
+        load_providers()
+
+
+def test_valid_provider_with_both_families_loads_ok(tmp_path, monkeypatch):
+    ok = tmp_path / "providers.json"
+    ok.write_text(json.dumps({
+        "cf": {
+            "name": "Cloudflare",
+            "ipv4": ["1.1.1.1"],
+            "ipv6": ["2606:4700:4700::1111"],
+        }
+    }))
+    monkeypatch.setattr("dnser.providers._USER_CONFIG", ok)
+    providers = load_providers()
+    assert "cf" in providers
+    assert providers["cf"].ipv4 == ["1.1.1.1"]

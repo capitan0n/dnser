@@ -115,3 +115,17 @@ class Backend(ABC):
         Raises BackendError if the payload is for a different backend or
         the restore fails.
         """
+
+    def describe_current_state(self) -> str:
+        """Return a short label describing the current DNS state.
+
+        Used by the CLI to name backup files after the state they contain
+        (not the state that's about to replace them). Common return values:
+          - "baseline" — no dnser drop-in / override is active
+          - "<provider>" — a known provider's servers are currently set
+          - "external" — a non-dnser drop-in / override is present
+          - "managed" — a dnser drop-in exists but its IPs match no known provider
+
+        Default returns "snapshot" — backends override for smarter labels.
+        """
+        return "snapshot"

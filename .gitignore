@@ -28,6 +28,6 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
-# dnsgo state
+# dnser state
 *.backup
 state/

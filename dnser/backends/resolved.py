@@ -31,6 +31,8 @@ from dnser.backends.base import (
     DNSState,
     Scope,
 )
+from dnser.providers import identify_provider
+from dnser.utils import sudo_hint
 
 
 # Drop-in path. "00-" so we load first among any user drop-ins.
@@ -106,6 +108,33 @@ class ResolvedBackend(Backend):
         state.notes.extend(self._protocol_notes())
 
         return state
+
+    # ------------------------------------------------------------------
+    # describe_current_state
+    # ------------------------------------------------------------------
+    def describe_current_state(self) -> str:
+        """Label for backup filename — describes what's in the snapshot."""
+        if not DROPIN_PATH.exists():
+            return "baseline"
+        try:
+            content = DROPIN_PATH.read_text(encoding="utf-8")
+        except OSError:
+            return "managed"
+
+        # Not our drop-in — someone else wrote it
+        if "Managed by dnser" not in content:
+            return "external"
+
+        # Extract DNS= line and try to identify the provider
+        for line in content.splitlines():
+            line = line.strip()
+            if line.startswith("DNS="):
+                servers = line[4:].split()  # 'DNS=1.1.1.1 1.0.0.1' -> ['1.1.1.1', '1.0.0.1']
+                provider_key = identify_provider(servers)
+                if provider_key:
+                    return provider_key
+                break
+        return "managed"
 
     # ------------------------------------------------------------------
     # snapshot
@@ -186,7 +215,8 @@ class ResolvedBackend(Backend):
             stderr = result.stderr.strip() or "no error message"
             if sudo and "password is required" in stderr.lower():
                 raise BackendError(
-                    "This operation requires root. Re-run with sudo."
+                    "This operation requires root privileges.\n"
+                    f"  Re-run: {sudo_hint()}"
                 )
             raise BackendError(
                 f"Command failed ({result.returncode}): {' '.join(cmd)}\n{stderr}"
@@ -232,7 +262,8 @@ class ResolvedBackend(Backend):
             stderr = proc.stderr.strip() or "no error message"
             if "password is required" in stderr.lower():
                 raise BackendError(
-                    f"Writing {DROPIN_PATH} requires root. Re-run with sudo."
+                    f"Writing {DROPIN_PATH} requires root.\n"
+                    f"  Re-run: {sudo_hint()}"
                 )
             raise BackendError(f"Failed to write drop-in: {stderr}")
 

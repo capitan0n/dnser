@@ -29,6 +29,8 @@ from dnser.backends.base import (
     DNSState,
     Scope,
 )
+from dnser.providers import identify_provider
+from dnser.utils import sudo_hint
 
 
 # Path where we write the global DNS override for NetworkManager.
@@ -79,6 +81,50 @@ class NetworkManagerBackend(Backend):
             )
 
         return state
+
+    # ------------------------------------------------------------------
+    # describe_current_state
+    # ------------------------------------------------------------------
+    def describe_current_state(self) -> str:
+        """Label for backup filename — describes what's in the snapshot.
+
+        For NM we check the global override file first (highest impact),
+        then fall back to inspecting the active connection's DNS.
+        """
+        # Case 1: global override present
+        if GLOBAL_CONF_PATH.exists():
+            try:
+                content = GLOBAL_CONF_PATH.read_text(encoding="utf-8")
+            except OSError:
+                return "managed"
+            if "Managed by dnser" not in content:
+                return "external"
+            for line in content.splitlines():
+                line = line.strip()
+                if line.startswith("servers="):
+                    # Format: 'servers=1.1.1.1,1.0.0.1' — comma-separated
+                    servers = line[8:].split(",")
+                    provider_key = identify_provider([s.strip() for s in servers if s.strip()])
+                    if provider_key:
+                        return provider_key
+                    break
+            return "managed"
+
+        # Case 2: no override — check what the active connection uses
+        try:
+            active = self._active_connection_name()
+            if active is None:
+                return "baseline"
+            fields = self._connection_dns_fields(active)
+            servers_str = fields.get("ipv4.dns", "").strip()
+            if not servers_str:
+                # No explicit DNS set on the connection — it's using DHCP-provided.
+                return "baseline"
+            servers = servers_str.split()
+            provider_key = identify_provider(servers)
+            return provider_key or "managed"
+        except BackendError:
+            return "snapshot"
 
     # ------------------------------------------------------------------
     # snapshot
@@ -194,8 +240,8 @@ class NetworkManagerBackend(Backend):
             stderr = result.stderr.strip() or "no error message"
             if sudo and "password is required" in stderr.lower():
                 raise BackendError(
-                    "This operation requires root privileges. "
-                    "Re-run with sudo, or configure passwordless sudo for nmcli."
+                    "This operation requires root privileges.\n"
+                    f"  Re-run: {sudo_hint()}"
                 )
             raise BackendError(
                 f"Command failed ({result.returncode}): {' '.join(cmd)}\n{stderr}"
@@ -387,8 +433,8 @@ class NetworkManagerBackend(Backend):
             stderr = proc.stderr.strip() or "no error message"
             if "password is required" in stderr.lower():
                 raise BackendError(
-                    f"Writing {GLOBAL_CONF_PATH} requires root. "
-                    "Re-run with sudo."
+                    f"Writing {GLOBAL_CONF_PATH} requires root.\n"
+                    f"  Re-run: {sudo_hint()}"
                 )
             raise BackendError(f"Failed to write global config: {stderr}")
 
@@ -409,8 +455,8 @@ class NetworkManagerBackend(Backend):
             stderr = proc.stderr.strip() or "no error message"
             if "password is required" in stderr.lower():
                 raise BackendError(
-                    f"Removing {GLOBAL_CONF_PATH} requires root. "
-                    "Re-run with sudo."
+                    f"Removing {GLOBAL_CONF_PATH} requires root.\n"
+                    f"  Re-run: {sudo_hint()}"
                 )
             raise BackendError(f"Failed to remove global config: {stderr}")
 

@@ -87,8 +87,17 @@ def _chown_to_real_user(path: Path) -> None:
         pass
 
 
-def save(payload: BackupPayload) -> Path:
+def save(payload: BackupPayload, label: str | None = None) -> Path:
     """Serialize a snapshot to a timestamped JSON file. Returns its path.
+
+    If `label` is given (e.g. the provider key), it is prefixed to the
+    filename for readability: 'quad9_20260815T222325Z.json' instead of
+    just '20260815T222325Z.json'. When no label is provided we fall back
+    to 'snapshot_<timestamp>.json' so the file is still identifiable as
+    a backup.
+
+    Labels are sanitized to a safe subset — anything outside [a-z0-9_-]
+    is replaced with '-' to keep filenames portable.
 
     Also prunes old backups beyond MAX_BACKUPS.
     """
@@ -97,13 +106,13 @@ def save(payload: BackupPayload) -> Path:
     # If we just created the directory tree while running under sudo, make
     # sure the user owns it — otherwise they can't write future backups.
     _chown_to_real_user(directory)
-    # Walk up and chown intermediate dirs we may have created.
     for parent in (directory.parent, directory.parent.parent):
         if parent.exists():
             _chown_to_real_user(parent)
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    path = directory / f"{timestamp}.json"
+    safe_label = _sanitize_label(label) if label else "snapshot"
+    path = directory / f"{safe_label}_{timestamp}.json"
 
     path.write_text(
         json.dumps(asdict(payload), indent=2, ensure_ascii=False),
@@ -113,6 +122,22 @@ def save(payload: BackupPayload) -> Path:
 
     _prune(directory)
     return path
+
+
+def _sanitize_label(label: str) -> str:
+    """Reduce a label to characters safe for filenames across filesystems.
+
+    Keep [a-z0-9_-], collapse anything else to '-'. Lowercased for
+    consistency with provider keys (which are always lowercase).
+    """
+    cleaned = []
+    for ch in label.lower():
+        if ch.isalnum() or ch in "_-":
+            cleaned.append(ch)
+        else:
+            cleaned.append("-")
+    result = "".join(cleaned).strip("-")
+    return result or "snapshot"
 
 
 def list_backups() -> list[Path]:
