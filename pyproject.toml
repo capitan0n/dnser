@@ -32,7 +32,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "rich>=13.0",
+    "rich>=13.0",  # για ωραίο output (πίνακες, χρώματα)
 ]
 
 [project.optional-dependencies]
@@ -41,6 +41,7 @@ dev = [
     "pytest-cov>=4.0",
 ]
 
+# Δημιουργεί το `dnser` command στο PATH μετά το install
 [project.scripts]
 dnser = "dnser.cli:main"
 
@@ -53,5 +54,10 @@ Source = "https://github.com/capitan0n/dnser"
 where = ["."]
 include = ["dnser*"]
 
+# providers.json ζει στο repo root — bundled μέσω package-data ώστε να
+# φτάνει και σε wheel installs (αντιγράφεται στο πακέτο κατά το build).
+# Editable installs (pipx install --editable .) βρίσκουν το ίδιο αρχείο
+# απευθείας από το repo root — το providers.py ψάχνει σε ../providers.json
+# σε σχέση με τον φάκελο του package.
 [tool.setuptools.package-data]
-dnser = ["../config/providers.json"]
+dnser = ["../providers.json"]

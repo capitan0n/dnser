@@ -15,7 +15,6 @@ Scopes for this backend:
   - GLOBAL: write /etc/systemd/resolved.conf.d/00-dnser.conf (default,
             because resolved doesn't have "per-connection" the way NM does)
   - CURRENT / ALL: same as GLOBAL for now — resolved is inherently global.
-                   We treat these scopes as aliases and warn.
 """
 
 from __future__ import annotations
@@ -29,10 +28,11 @@ from dnser.backends.base import (
     BackendError,
     BackupPayload,
     DNSState,
+    ProtocolSettings,
     Scope,
+    sudo_hint,
 )
 from dnser.providers import identify_provider
-from dnser.utils import sudo_hint
 
 
 # Drop-in path. "00-" so we load first among any user drop-ins.
@@ -51,7 +51,6 @@ class ResolvedBackend(Backend):
         if shutil.which("resolvectl") is None:
             return False
         try:
-            # `systemctl is-active` returns 0 if the service is running.
             result = subprocess.run(
                 ["systemctl", "is-active", "--quiet", "systemd-resolved"],
                 timeout=5,
@@ -67,9 +66,6 @@ class ResolvedBackend(Backend):
         """Return DNS state as seen by resolved (per-link, plus global)."""
         state = DNSState(backend_name=self.display_name)
 
-        # `resolvectl dns` produces one line per link:
-        #   "Global: 9.9.9.9 149.112.112.112"
-        #   "Link 3 (wlp2s0): 192.168.0.1"
         try:
             output = self._run(["resolvectl", "dns"])
         except BackendError as e:
@@ -84,9 +80,7 @@ class ResolvedBackend(Backend):
             label = label.strip()
             servers = servers_raw.strip().split()
 
-            # Normalize labels: "Link 3 (wlp2s0)" -> "wlp2s0"; "Global" -> "global"
             if label.lower().startswith("link"):
-                # Extract text inside parentheses
                 if "(" in label and ")" in label:
                     iface = label[label.index("(") + 1 : label.index(")")]
                 else:
@@ -95,18 +89,13 @@ class ResolvedBackend(Backend):
                     continue
                 state.per_interface[iface] = servers
             elif label.lower() == "global":
-                # Only show a "global" row if it actually has servers set.
-                # An empty Global entry is the normal default state.
                 if servers:
                     state.per_interface["(global)"] = servers
 
-        # Note if our drop-in is active — user should know.
         if DROPIN_PATH.exists():
             state.notes.append(f"dnser drop-in active: {DROPIN_PATH}")
 
-        # Also note DoT / DNSSEC status from the top of `resolvectl status`.
-        state.notes.extend(self._protocol_notes())
-
+        state.protocols = self._read_protocol_state()
         return state
 
     # ------------------------------------------------------------------
@@ -121,15 +110,13 @@ class ResolvedBackend(Backend):
         except OSError:
             return "managed"
 
-        # Not our drop-in — someone else wrote it
         if "Managed by dnser" not in content:
             return "external"
 
-        # Extract DNS= line and try to identify the provider
         for line in content.splitlines():
             line = line.strip()
             if line.startswith("DNS="):
-                servers = line[4:].split()  # 'DNS=1.1.1.1 1.0.0.1' -> ['1.1.1.1', '1.0.0.1']
+                servers = line[4:].split()
                 provider_key = identify_provider(servers)
                 if provider_key:
                     return provider_key
@@ -140,7 +127,11 @@ class ResolvedBackend(Backend):
     # snapshot
     # ------------------------------------------------------------------
     def snapshot(self) -> BackupPayload:
-        """Capture existing drop-in content (or None if absent)."""
+        """Capture existing drop-in content (or None if absent).
+
+        The drop-in file contains the entire state we manage (DNS +
+        protocol settings), so a single file is enough to restore everything.
+        """
         dropin_content: str | None = None
         if DROPIN_PATH.exists():
             try:
@@ -160,24 +151,20 @@ class ResolvedBackend(Backend):
         servers: list[str],
         scope: Scope,
         interface: str | None = None,
+        protocols: ProtocolSettings | None = None,
     ) -> None:
         """Write drop-in and restart resolved.
 
-        All scopes are treated as global for this backend (resolved has no
-        per-connection notion). We accept the flags for CLI compatibility
-        but the effect is the same. `interface` is currently ignored.
+        All scopes are treated as global for this backend. `interface` is
+        accepted for CLI parity but ignored. `protocols` fully supported.
         """
         if not servers:
             raise BackendError("set_dns called with empty server list")
-        # interface is intentionally ignored for the resolved backend —
-        # accepted for CLI compatibility across backends.
-        del interface
-
-        # We don't error on non-GLOBAL scopes to keep the CLI backend-agnostic,
-        # but callers should be aware they behave the same here.
+        del interface  # resolved is inherently global; accept for CLI parity
         _ = scope
 
-        content = self._build_dropin(servers)
+        settings = protocols or ProtocolSettings()
+        content = self._build_dropin(servers, settings)
         self._write_dropin(content)
         self._restart_resolved()
 
@@ -226,24 +213,44 @@ class ResolvedBackend(Backend):
     # ==================================================================
     # Internal: drop-in file management
     # ==================================================================
-    def _build_dropin(self, servers: list[str]) -> str:
+    def _build_dropin(self, servers: list[str], settings: ProtocolSettings) -> str:
         """Build the [Resolve] section contents for a drop-in file.
 
-        We enable DoT (opportunistic → yes) when the server list contains
-        entries with #hostname syntax, since providers that support DoT
-        should always be used with TLS. Otherwise leave opportunistic.
-        """
-        has_dot = any("#" in s for s in servers)
-        dot_line = "DNSOverTLS=yes" if has_dot else "DNSOverTLS=opportunistic"
+        DoT behavior:
+          - If any server has '#hostname' syntax, DoT is required → 'yes'
+            (or 'yes' + explicit strict if dot_strict).
+          - dot_strict without any DoT servers is a config error caught upstream.
+          - Otherwise 'opportunistic' (default resolved behavior).
 
-        return (
-            "# Managed by dnser — do not edit by hand.\n"
-            "# Remove with: dnser restore\n"
-            "[Resolve]\n"
-            f"DNS={' '.join(servers)}\n"
-            "Domains=~.\n"
-            f"{dot_line}\n"
-        )
+        Protocol lines are only written when the user explicitly requested them,
+        so we don't silently override resolved's defaults for flags left unset.
+        """
+        has_dot_servers = any("#" in s for s in servers)
+
+        if settings.dot_strict:
+            dot_value = "yes"  # strict = fail closed
+        elif has_dot_servers:
+            dot_value = "yes"  # DoT servers imply required DoT
+        else:
+            dot_value = "opportunistic"
+
+        lines = [
+            "# Managed by dnser — do not edit by hand.",
+            "# Remove with: dnser restore",
+            "[Resolve]",
+            f"DNS={' '.join(servers)}",
+            "Domains=~.",
+            f"DNSOverTLS={dot_value}",
+        ]
+
+        if settings.dnssec:
+            lines.append("DNSSEC=yes")
+        if settings.no_llmnr:
+            lines.append("LLMNR=no")
+        if settings.no_mdns:
+            lines.append("MulticastDNS=no")
+
+        return "\n".join(lines) + "\n"
 
     def _write_dropin(self, content: str) -> None:
         """Write the drop-in file. Uses sudo/tee if not writable directly."""
@@ -253,7 +260,6 @@ class ResolvedBackend(Backend):
             return
         except (PermissionError, OSError):
             pass
-        # Fallback: sudo tee
         proc = subprocess.run(
             ["sudo", "--non-interactive", "tee", str(DROPIN_PATH)],
             input=content, capture_output=True, text=True, timeout=10,
@@ -285,11 +291,7 @@ class ResolvedBackend(Backend):
             )
 
     def _restart_resolved(self) -> None:
-        """Restart systemd-resolved so drop-in changes take effect.
-
-        We need a full restart (not just reload) because drop-ins are only
-        re-read on start-up. Reload only reloads runtime state, not config.
-        """
+        """Restart systemd-resolved so drop-in changes take effect."""
         try:
             self._run(["systemctl", "restart", "systemd-resolved"])
         except BackendError:
@@ -298,21 +300,38 @@ class ResolvedBackend(Backend):
     # ==================================================================
     # Internal: protocol status extraction
     # ==================================================================
-    def _protocol_notes(self) -> list[str]:
-        """Return short notes about DoT/DNSSEC status from resolvectl status."""
-        notes: list[str] = []
+    def _read_protocol_state(self) -> dict[str, str]:
+        """Parse `resolvectl status` for LLMNR/mDNS/DNSSEC/DoT global state.
+
+        The 'Protocols:' line format (as of systemd 250+):
+          Protocols: -LLMNR -mDNS DNSOverTLS=opportunistic DNSSEC=no/unsupported
+
+        Leading '-' means disabled; no prefix means enabled. Key=value pairs
+        are explicit. We normalize everything into a flat dict.
+        """
+        protocols: dict[str, str] = {}
         try:
             output = self._run(["resolvectl", "status"])
         except BackendError:
-            return notes
+            return protocols
 
-        # Look for the Global "Protocols:" line, which lists the enabled
-        # protocols in a compact form:
-        #   Protocols: -LLMNR -mDNS DNSOverTLS=yes DNSSEC=no
         for line in output.splitlines():
-            line = line.strip()
-            if line.startswith("Protocols:") and "DNSOverTLS" in line:
-                # Only take the first (global) match to keep notes short.
-                notes.append(line)
-                break
-        return notes
+            stripped = line.strip()
+            if not stripped.startswith("Protocols:"):
+                continue
+            # Only take the first (global) match — per-link Protocols lines
+            # come later and would overwrite.
+            payload = stripped[len("Protocols:"):].strip()
+            for token in payload.split():
+                if "=" in token:
+                    # e.g. 'DNSOverTLS=opportunistic'
+                    key, _, value = token.partition("=")
+                    protocols[key] = value
+                elif token.startswith("-"):
+                    # e.g. '-LLMNR' -> disabled
+                    protocols[token[1:]] = "no"
+                else:
+                    # e.g. 'LLMNR' (no prefix) -> enabled
+                    protocols[token] = "yes"
+            break
+        return protocols

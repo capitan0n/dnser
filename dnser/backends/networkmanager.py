@@ -13,11 +13,16 @@ Scopes:
   - GLOBAL:  write /etc/NetworkManager/conf.d/00-dnser-global.conf which
              overrides all per-connection DNS via NM global-dns-domain-*
              (present and future connections included)
+
+Protocol hardening:
+  - LLMNR / mDNS: supported via nmcli's per-connection settings
+    (connection.llmnr, connection.mdns) with values 'no' / 'default'
+  - DNSSEC / DoT-strict: NOT supported by NM (needs a resolver). We
+    raise BackendError with a clear message pointing at systemd-resolved.
 """
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -27,15 +32,27 @@ from dnser.backends.base import (
     BackendError,
     BackupPayload,
     DNSState,
+    ProtocolSettings,
     Scope,
+    sudo_hint,
 )
 from dnser.providers import identify_provider
-from dnser.utils import sudo_hint
 
 
 # Path where we write the global DNS override for NetworkManager.
 # The "00-" prefix ensures it loads before other conf.d files.
 GLOBAL_CONF_PATH = Path("/etc/NetworkManager/conf.d/00-dnser-global.conf")
+
+# The four DNS fields plus the two protocol fields we snapshot per connection.
+# We keep DNS and protocol fields together so a single restore covers both.
+_NM_DNS_FIELDS = (
+    "ipv4.dns", "ipv4.ignore-auto-dns",
+    "ipv6.dns", "ipv6.ignore-auto-dns",
+)
+_NM_PROTOCOL_FIELDS = (
+    "connection.llmnr",
+    "connection.mdns",
+)
 
 
 class NetworkManagerBackend(Backend):
@@ -73,13 +90,10 @@ class NetworkManagerBackend(Backend):
             for device in devices:
                 state.per_interface[device] = self._dns_for_device(device)
 
-        # Report if a global override is in effect — the user should know
-        # because it explains why per-connection changes may not take effect.
         if GLOBAL_CONF_PATH.exists():
-            state.notes.append(
-                f"Global DNS override active: {GLOBAL_CONF_PATH}"
-            )
+            state.notes.append(f"Global DNS override active: {GLOBAL_CONF_PATH}")
 
+        state.protocols = self._read_protocol_state()
         return state
 
     # ------------------------------------------------------------------
@@ -91,7 +105,6 @@ class NetworkManagerBackend(Backend):
         For NM we check the global override file first (highest impact),
         then fall back to inspecting the active connection's DNS.
         """
-        # Case 1: global override present
         if GLOBAL_CONF_PATH.exists():
             try:
                 content = GLOBAL_CONF_PATH.read_text(encoding="utf-8")
@@ -102,7 +115,6 @@ class NetworkManagerBackend(Backend):
             for line in content.splitlines():
                 line = line.strip()
                 if line.startswith("servers="):
-                    # Format: 'servers=1.1.1.1,1.0.0.1' — comma-separated
                     servers = line[8:].split(",")
                     provider_key = identify_provider([s.strip() for s in servers if s.strip()])
                     if provider_key:
@@ -110,15 +122,13 @@ class NetworkManagerBackend(Backend):
                     break
             return "managed"
 
-        # Case 2: no override — check what the active connection uses
         try:
             active = self._active_connection_name()
             if active is None:
                 return "baseline"
-            fields = self._connection_dns_fields(active)
+            fields = self._connection_fields(active, _NM_DNS_FIELDS)
             servers_str = fields.get("ipv4.dns", "").strip()
             if not servers_str:
-                # No explicit DNS set on the connection — it's using DHCP-provided.
                 return "baseline"
             servers = servers_str.split()
             provider_key = identify_provider(servers)
@@ -130,23 +140,22 @@ class NetworkManagerBackend(Backend):
     # snapshot
     # ------------------------------------------------------------------
     def snapshot(self) -> BackupPayload:
-        """Capture per-connection DNS settings and any existing global override.
+        """Capture per-connection DNS + protocol settings and global override.
 
-        We save the 4 fields NM uses for DNS on each connection:
-          - ipv4.dns, ipv4.ignore-auto-dns
-          - ipv6.dns, ipv6.ignore-auto-dns
-        This is enough to fully restore original behavior (DHCP or manual).
+        We save DNS fields and protocol fields together so restore reverts
+        everything in one shot without needing to know which was changed.
         """
         per_connection: dict[str, dict[str, str]] = {}
         for name in self._all_connection_names():
-            per_connection[name] = self._connection_dns_fields(name)
+            per_connection[name] = self._connection_fields(
+                name, _NM_DNS_FIELDS + _NM_PROTOCOL_FIELDS
+            )
 
         global_conf_content: str | None = None
         if GLOBAL_CONF_PATH.exists():
             try:
                 global_conf_content = GLOBAL_CONF_PATH.read_text(encoding="utf-8")
             except OSError:
-                # Unreadable (perms) — record that it existed but content lost
                 global_conf_content = ""
 
         return BackupPayload(
@@ -165,16 +174,20 @@ class NetworkManagerBackend(Backend):
         servers: list[str],
         scope: Scope,
         interface: str | None = None,
+        protocols: ProtocolSettings | None = None,
     ) -> None:
         """Apply DNS according to scope. See base class for semantics."""
         if not servers:
             raise BackendError("set_dns called with empty server list")
 
+        settings = protocols or ProtocolSettings()
+        self._validate_supported(settings)
+
         if scope is Scope.GLOBAL:
-            self._set_global(servers)
+            self._set_global(servers, settings)
         elif scope is Scope.ALL:
             for conn in self._all_connection_names():
-                self._set_connection(conn, servers)
+                self._set_connection(conn, servers, settings)
             self._reactivate_current()
         elif scope is Scope.CURRENT:
             conn = self._connection_for_interface(interface) if interface else self._active_connection_name()
@@ -183,7 +196,7 @@ class NetworkManagerBackend(Backend):
                     "No active connection found. Use --all or --global, "
                     "or connect to a network first."
                 )
-            self._set_connection(conn, servers)
+            self._set_connection(conn, servers, settings)
             self._reactivate_connection(conn)
         else:
             raise BackendError(f"Unknown scope: {scope}")
@@ -199,27 +212,38 @@ class NetworkManagerBackend(Backend):
                 f"cannot restore with '{self.name}'"
             )
 
-        # 1. Restore per-connection settings for every connection still present.
         existing = set(self._all_connection_names())
         for conn, fields in payload.data.get("per_connection", {}).items():
             if conn not in existing:
-                # Connection was deleted since backup — skip silently.
                 continue
             self._restore_connection_fields(conn, fields)
 
-        # 2. Restore or remove the global override.
         original_global = payload.data.get("global_conf_content")
         if original_global is None:
-            # There was no global override at backup time — remove ours.
             self._remove_global_conf()
         else:
-            # There was one — write it back verbatim.
             self._write_global_conf(original_global)
 
-        # 3. Reload NM to pick up global config changes, and reactivate
-        # the current connection so per-conn DNS changes take effect.
         self._reload_nm()
         self._reactivate_current()
+
+    # ==================================================================
+    # Internal: capability checks
+    # ==================================================================
+    def _validate_supported(self, settings: ProtocolSettings) -> None:
+        """Reject protocol flags NM cannot honor, with a clear message."""
+        unsupported = []
+        if settings.dnssec:
+            unsupported.append("--dnssec")
+        if settings.dot_strict:
+            unsupported.append("--dot-strict")
+        if unsupported:
+            raise BackendError(
+                f"NetworkManager backend cannot apply: {', '.join(unsupported)}.\n"
+                "  These require a resolver. Install/enable systemd-resolved\n"
+                "  and configure NM to hand off DNS (dns=systemd-resolved),\n"
+                "  then re-run the command."
+            )
 
     # ==================================================================
     # Internal: subprocess wrapper
@@ -286,16 +310,10 @@ class NetworkManagerBackend(Backend):
         return servers
 
     def _all_connection_names(self) -> list[str]:
-        """Return names of all saved connection profiles.
-
-        We only touch real network connections — skip loopback and
-        anything that isn't a normal profile.
-        """
+        """Return names of all saved connection profiles."""
         output = self._run(["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show"])
         names: list[str] = []
         for line in output.strip().splitlines():
-            # A connection name can contain colons, so split from the right (rsplit)
-            # to correctly extract just the TYPE field.
             parts = line.rsplit(":", 1)
             if len(parts) != 2:
                 continue
@@ -336,32 +354,66 @@ class NetworkManagerBackend(Backend):
                 return name
         return None
 
-    def _connection_dns_fields(self, connection: str) -> dict[str, str]:
-        """Read the 4 DNS-relevant fields from a connection profile."""
-        fields = ["ipv4.dns", "ipv4.ignore-auto-dns",
-                  "ipv6.dns", "ipv6.ignore-auto-dns"]
+    def _connection_fields(self, connection: str, fields: tuple[str, ...]) -> dict[str, str]:
+        """Read a set of fields from a connection profile."""
         output = self._run([
             "nmcli", "-t", "-f", ",".join(fields),
             "connection", "show", connection,
         ])
         result: dict[str, str] = {}
         for line in output.strip().splitlines():
-            # Format: "ipv4.dns:1.1.1.1 9.9.9.9" (space-separated values)
             key, _, value = line.partition(":")
             result[key.strip()] = value.strip()
         return result
 
     # ==================================================================
+    # Internal: protocol state read
+    # ==================================================================
+    def _read_protocol_state(self) -> dict[str, str]:
+        """Report LLMNR/mDNS state as seen on the currently active connection.
+
+        NM stores these per-connection. We report the active connection's
+        values as the effective global state — matches user expectation
+        that `dnser status` shows what's actually in force *right now*.
+
+        NM cannot report DNSSEC / DoT (no resolver in NM itself), so
+        those keys are omitted rather than reported as 'unknown'.
+        """
+        result: dict[str, str] = {}
+        try:
+            active = self._active_connection_name()
+        except BackendError:
+            return result
+        if active is None:
+            return result
+        try:
+            fields = self._connection_fields(active, _NM_PROTOCOL_FIELDS)
+        except BackendError:
+            return result
+
+        # nmcli returns values as strings; 'no' / '--' means disabled/default.
+        # We normalize: '--' → 'default', anything else stays verbatim.
+        llmnr = fields.get("connection.llmnr", "").strip()
+        mdns = fields.get("connection.mdns", "").strip()
+        if llmnr and llmnr != "--":
+            result["LLMNR"] = llmnr
+        if mdns and mdns != "--":
+            result["mDNS"] = mdns
+        return result
+
+    # ==================================================================
     # Internal: mutation
     # ==================================================================
-    def _set_connection(self, connection: str, servers: list[str]) -> None:
-        """Set DNS on a single saved connection profile.
+    def _set_connection(
+        self, connection: str, servers: list[str], settings: ProtocolSettings
+    ) -> None:
+        """Set DNS + protocol settings on a single saved connection profile.
 
         We set both ipv4.dns and ignore-auto-dns=yes so DHCP-provided
-        servers don't sneak back in. IPv6 servers are handled by NM
-        automatically if the user's providers.json lists them.
+        servers don't sneak back in. IPv6 handled the same way.
+        LLMNR/mDNS are toggled to 'no' only when the user asked; otherwise
+        left untouched (NM will use its default).
         """
-        # Separate v4 and v6 by presence of ':'
         v4 = [s for s in servers if ":" not in s]
         v6 = [s for s in servers if ":" in s]
 
@@ -370,15 +422,15 @@ class NetworkManagerBackend(Backend):
             args += ["ipv4.dns", " ".join(v4), "ipv4.ignore-auto-dns", "yes"]
         if v6:
             args += ["ipv6.dns", " ".join(v6), "ipv6.ignore-auto-dns", "yes"]
+        if settings.no_llmnr:
+            args += ["connection.llmnr", "no"]
+        if settings.no_mdns:
+            args += ["connection.mdns", "no"]
         self._run(args)
 
     def _restore_connection_fields(self, connection: str, fields: dict[str, str]) -> None:
-        """Restore the 4 DNS fields on a connection to their backed-up values.
-
-        Empty string means "not set" for nmcli — use empty quotes.
-        """
-        for key in ("ipv4.dns", "ipv4.ignore-auto-dns",
-                    "ipv6.dns", "ipv6.ignore-auto-dns"):
+        """Restore DNS + protocol fields on a connection to backed-up values."""
+        for key in _NM_DNS_FIELDS + _NM_PROTOCOL_FIELDS:
             value = fields.get(key, "")
             # nmcli accepts "" to clear a field
             self._run(["nmcli", "connection", "modify", connection, key, value])
@@ -388,8 +440,6 @@ class NetworkManagerBackend(Backend):
         try:
             self._run(["nmcli", "connection", "up", connection])
         except BackendError:
-            # Reactivation is a nice-to-have; if it fails (e.g. wifi not in
-            # range), the config is still saved and will apply next connect.
             pass
 
     def _reactivate_current(self) -> None:
@@ -398,12 +448,12 @@ class NetworkManagerBackend(Backend):
         if current:
             self._reactivate_connection(current)
 
-    def _set_global(self, servers: list[str]) -> None:
+    def _set_global(self, servers: list[str], settings: ProtocolSettings) -> None:
         """Write /etc/NetworkManager/conf.d/00-dnser-global.conf.
 
-        Requires root. The wildcard [global-dns-domain-*] section makes
-        NM use these servers for every DNS query, overriding whatever
-        each connection has configured.
+        The [global-dns-domain-*] section forces DNS servers globally.
+        LLMNR/mDNS get applied to all saved connections (NM has no
+        global toggle for them) as a best-effort for --global scope.
         """
         content = (
             "# Managed by dnser — do not edit by hand.\n"
@@ -412,19 +462,29 @@ class NetworkManagerBackend(Backend):
             f"servers={','.join(servers)}\n"
         )
         self._write_global_conf(content)
+
+        # LLMNR/mDNS have no global equivalent in NM — apply per-connection
+        # as best-effort so --global with --no-llmnr does what the user
+        # expects even though the mechanism is different.
+        if settings.no_llmnr or settings.no_mdns:
+            for conn in self._all_connection_names():
+                args = ["nmcli", "connection", "modify", conn]
+                if settings.no_llmnr:
+                    args += ["connection.llmnr", "no"]
+                if settings.no_mdns:
+                    args += ["connection.mdns", "no"]
+                self._run(args)
+
         self._reload_nm()
 
     def _write_global_conf(self, content: str) -> None:
         """Write to the global conf path. Uses sudo if not writable directly."""
         try:
-            # Fast path: running as root, or the file is world-writable (unlikely).
             GLOBAL_CONF_PATH.parent.mkdir(parents=True, exist_ok=True)
             GLOBAL_CONF_PATH.write_text(content, encoding="utf-8")
             return
         except (PermissionError, OSError):
             pass
-        # Slow path: write to a temp file we own, then sudo-move it into place.
-        # tee is the simplest way to write a root-owned file via sudo.
         proc = subprocess.run(
             ["sudo", "--non-interactive", "tee", str(GLOBAL_CONF_PATH)],
             input=content, capture_output=True, text=True, timeout=10,
@@ -462,10 +522,7 @@ class NetworkManagerBackend(Backend):
 
     def _reload_nm(self) -> None:
         """Ask NM to re-read its config files (needed after touching conf.d)."""
-        # `nmcli general reload` picks up conf.d changes without a full restart.
-        # Doesn't require sudo on most systems if user is authenticated to NM.
         try:
             self._run(["nmcli", "general", "reload"])
         except BackendError:
-            # Fall back to sudo — some systems (locked-down polkit) need it.
             self._run(["nmcli", "general", "reload"], sudo=True)

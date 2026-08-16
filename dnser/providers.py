@@ -11,10 +11,10 @@ from pathlib import Path
 # Provider file lookup order:
 # 1. User override: ~/.config/dnser/providers.json (highest priority)
 # 2. System install: /etc/dnser/providers.json
-# 3. Bundled default: <package>/../config/providers.json (fallback)
+# 3. Bundled default: <repo-root>/providers.json (fallback)
 _USER_CONFIG = Path.home() / ".config" / "dnser" / "providers.json"
 _SYSTEM_CONFIG = Path("/etc/dnser/providers.json")
-_BUNDLED_CONFIG = Path(__file__).parent.parent / "config" / "providers.json"
+_BUNDLED_CONFIG = Path(__file__).parent.parent / "providers.json"
 
 
 @dataclass
@@ -25,8 +25,8 @@ class Provider:
     description: str
     ipv4: list[str] = field(default_factory=list)
     ipv6: list[str] = field(default_factory=list)
-    dot_hostname: str | None = None   # for future DoT support
-    doh_url: str | None = None        # for future DoH support
+    dot_hostname: str | None = None   # DoT hostname for TLS cert verification
+    tags: list[str] = field(default_factory=list)  # short labels for display
 
     def all_servers(self, include_ipv6: bool = True) -> list[str]:
         """Return all DNS server IPs (IPv4 first, then IPv6 if requested)."""
@@ -84,10 +84,12 @@ def load_providers() -> dict[str, Provider]:
         try:
             ipv4 = list(data.get("ipv4", []))
             ipv6 = list(data.get("ipv6", []))
+            tags = list(data.get("tags", []))
             # Validate every IP before accepting the provider. Catching
             # typos here beats a cryptic nmcli/resolvectl failure later.
             _validate_ips(key, ipv4, expected_version=4)
             _validate_ips(key, ipv6, expected_version=6)
+            _validate_tags(key, tags)
             providers[key] = Provider(
                 key=key,
                 name=data.get("name", key.title()),
@@ -95,7 +97,7 @@ def load_providers() -> dict[str, Provider]:
                 ipv4=ipv4,
                 ipv6=ipv6,
                 dot_hostname=data.get("dot_hostname"),
-                doh_url=data.get("doh_url"),
+                tags=tags,
             )
         except (TypeError, ValueError) as e:
             raise ProviderError(f"Provider '{key}' is malformed: {e}") from e
@@ -107,10 +109,7 @@ def load_providers() -> dict[str, Provider]:
 
 
 def _validate_ips(provider_key: str, ips: list[str], expected_version: int) -> None:
-    """Raise ProviderError if any IP is malformed or of the wrong family.
-
-    expected_version: 4 for the ipv4 field, 6 for ipv6.
-    """
+    """Raise ProviderError if any IP is malformed or of the wrong family."""
     for ip in ips:
         try:
             parsed = ipaddress.ip_address(ip)
@@ -125,17 +124,24 @@ def _validate_ips(provider_key: str, ips: list[str], expected_version: int) -> N
             )
 
 
+def _validate_tags(provider_key: str, tags: list[str]) -> None:
+    """Ensure tags are simple strings — no schema enforcement beyond that."""
+    for tag in tags:
+        if not isinstance(tag, str) or not tag.strip():
+            raise ProviderError(
+                f"Provider '{provider_key}': tag {tag!r} must be a non-empty string."
+            )
+
+
 def identify_provider(ips: list[str]) -> str | None:
     """Return the provider key whose IP list contains any of `ips`, else None.
 
     Strips DoT '#hostname' suffixes before comparing. Matches on ANY common
     IP — providers rarely share IPs, so a single match is enough to identify.
-    Returns None if no bundled/user provider matches.
     """
     if not ips:
         return None
 
-    # Normalize input: strip any '#hostname' suffix used for DoT.
     plain_ips = {ip.split("#", 1)[0] for ip in ips}
 
     try:

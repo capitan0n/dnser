@@ -1,0 +1,122 @@
+{
+  "quad9": {
+    "name": "Quad9",
+    "description": "Swiss non-profit. Malware blocking, DNSSEC.",
+    "tags": ["malware", "dnssec", "no-log"],
+    "ipv4": ["9.9.9.9", "149.112.112.112"],
+    "ipv6": ["2620:fe::fe", "2620:fe::9"],
+    "dot_hostname": "dns.quad9.net"
+  },
+  "quad9-unfiltered": {
+    "name": "Quad9 Unfiltered",
+    "description": "Same as Quad9, but no malware blocking and no DNSSEC.",
+    "tags": ["no-log"],
+    "ipv4": ["9.9.9.10", "149.112.112.10"],
+    "ipv6": ["2620:fe::10", "2620:fe::fe:10"],
+    "dot_hostname": "dns10.quad9.net"
+  },
+  "quad9-ecs": {
+    "name": "Quad9 ECS",
+    "description": "Malware + DNSSEC, with EDNS Client Subnet for better CDN routing.",
+    "tags": ["malware", "dnssec", "ecs"],
+    "ipv4": ["9.9.9.11", "149.112.112.11"],
+    "ipv6": ["2620:fe::11", "2620:fe::fe:11"],
+    "dot_hostname": "dns11.quad9.net"
+  },
+  "mullvad": {
+    "name": "Mullvad",
+    "description": "Swedish privacy-first. Requires DoT/DoH.",
+    "tags": ["no-log"],
+    "ipv4": ["194.242.2.2"],
+    "ipv6": ["2a07:e340::2"],
+    "dot_hostname": "dns.mullvad.net"
+  },
+  "mullvad-adblock": {
+    "name": "Mullvad Adblock",
+    "description": "Mullvad + ad and tracker blocking.",
+    "tags": ["ads", "no-log"],
+    "ipv4": ["194.242.2.3"],
+    "ipv6": ["2a07:e340::3"],
+    "dot_hostname": "adblock.dns.mullvad.net"
+  },
+  "mullvad-family": {
+    "name": "Mullvad Family",
+    "description": "Mullvad + ad, tracker and adult-content blocking.",
+    "tags": ["ads", "family", "no-log"],
+    "ipv4": ["194.242.2.6"],
+    "ipv6": ["2a07:e340::6"],
+    "dot_hostname": "family.dns.mullvad.net"
+  },
+  "adguard": {
+    "name": "AdGuard",
+    "description": "Ad and tracker blocking at DNS level.",
+    "tags": ["ads"],
+    "ipv4": ["94.140.14.14", "94.140.15.15"],
+    "ipv6": ["2a10:50c0::ad1:ff", "2a10:50c0::ad2:ff"],
+    "dot_hostname": "dns.adguard-dns.com"
+  },
+  "adguard-family": {
+    "name": "AdGuard Family",
+    "description": "AdGuard + adult-content blocking, safe search enforced.",
+    "tags": ["ads", "family"],
+    "ipv4": ["94.140.14.15", "94.140.15.16"],
+    "ipv6": ["2a10:50c0::bad1:ff", "2a10:50c0::bad2:ff"],
+    "dot_hostname": "family.adguard-dns.com"
+  },
+  "adguard-unfiltered": {
+    "name": "AdGuard Unfiltered",
+    "description": "AdGuard servers without any filtering.",
+    "tags": [],
+    "ipv4": ["94.140.14.140", "94.140.14.141"],
+    "ipv6": ["2a10:50c0::1:ff", "2a10:50c0::2:ff"],
+    "dot_hostname": "unfiltered.adguard-dns.com"
+  },
+  "cloudflare": {
+    "name": "Cloudflare",
+    "description": "Fast, mainstream. Independent privacy audit.",
+    "tags": [],
+    "ipv4": ["1.1.1.1", "1.0.0.1"],
+    "ipv6": ["2606:4700:4700::1111", "2606:4700:4700::1001"],
+    "dot_hostname": "one.one.one.one"
+  },
+  "cloudflare-malware": {
+    "name": "Cloudflare Malware",
+    "description": "Cloudflare + malware blocking.",
+    "tags": ["malware"],
+    "ipv4": ["1.1.1.2", "1.0.0.2"],
+    "ipv6": ["2606:4700:4700::1112", "2606:4700:4700::1002"],
+    "dot_hostname": "security.cloudflare-dns.com"
+  },
+  "cloudflare-family": {
+    "name": "Cloudflare Family",
+    "description": "Cloudflare + malware and adult-content blocking.",
+    "tags": ["malware", "family"],
+    "ipv4": ["1.1.1.3", "1.0.0.3"],
+    "ipv6": ["2606:4700:4700::1113", "2606:4700:4700::1003"],
+    "dot_hostname": "family.cloudflare-dns.com"
+  },
+  "opendns": {
+    "name": "OpenDNS",
+    "description": "Cisco-owned. Phishing protection built in.",
+    "tags": ["malware"],
+    "ipv4": ["208.67.222.222", "208.67.220.220"],
+    "ipv6": ["2620:119:35::35", "2620:119:53::53"],
+    "dot_hostname": "dns.opendns.com"
+  },
+  "opendns-family": {
+    "name": "OpenDNS FamilyShield",
+    "description": "OpenDNS + adult-content blocking (FamilyShield).",
+    "tags": ["malware", "family"],
+    "ipv4": ["208.67.222.123", "208.67.220.123"],
+    "ipv6": ["2620:119:35::123", "2620:119:53::123"],
+    "dot_hostname": "familyshield.opendns.com"
+  },
+  "google": {
+    "name": "Google Public DNS",
+    "description": "Fast, ubiquitous. Note: Google logs queries.",
+    "tags": ["dnssec"],
+    "ipv4": ["8.8.8.8", "8.8.4.4"],
+    "ipv6": ["2001:4860:4860::8888", "2001:4860:4860::8844"],
+    "dot_hostname": "dns.google"
+  }
+}

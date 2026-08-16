@@ -7,6 +7,7 @@ goes through the dispatcher in `detect.py`.
 
 from __future__ import annotations
 
+import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
@@ -26,6 +27,22 @@ class Scope(Enum):
 
 
 @dataclass
+class ProtocolSettings:
+    """Optional protocol-level hardening flags applied alongside a DNS change.
+
+    All defaults mean "leave alone" — a set_dns call with an empty
+    ProtocolSettings changes only the DNS servers, nothing else.
+
+    Not every backend supports every flag. Backends that can't honor a
+    requested flag raise BackendError with a clear message.
+    """
+    no_llmnr: bool = False       # disable Link-Local Multicast Name Resolution
+    no_mdns: bool = False        # disable Multicast DNS (.local resolution)
+    dnssec: bool = False         # require DNSSEC validation (resolved only)
+    dot_strict: bool = False     # DoT strict mode: fail-closed on TLS failure
+
+
+@dataclass
 class DNSState:
     """Snapshot of DNS configuration at a point in time.
 
@@ -37,6 +54,10 @@ class DNSState:
     per_interface: dict[str, list[str]] = field(default_factory=dict)
     # Human-readable notes: e.g. "DoT enabled", "search domains: example.com"
     notes: list[str] = field(default_factory=list)
+    # Per-protocol state, keyed by protocol name (LLMNR/mDNS/DNSSEC/DNSOverTLS).
+    # Values are backend-reported strings ('yes','no','opportunistic','unknown').
+    # Empty dict means the backend didn't report protocol state.
+    protocols: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -54,6 +75,17 @@ class BackendError(Exception):
     """Raised when a backend operation fails (command failure, permission, etc)."""
 
 
+def sudo_hint() -> str:
+    """Build a copy-pasteable sudo command to re-run the current invocation.
+
+    We echo the argv verbatim (with the resolved script path) so the user
+    doesn't have to figure out venv paths themselves.
+    """
+    executable = sys.argv[0] if sys.argv else "dnser"
+    args = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else ""
+    return f"sudo {executable} {args}".rstrip()
+
+
 class Backend(ABC):
     """The contract every DNS backend must implement.
 
@@ -61,10 +93,7 @@ class Backend(ABC):
     They don't cache; they always query the live system state.
     """
 
-    #: short identifier used in logs and status output, e.g. "networkmanager"
     name: str = ""
-
-    #: human-readable name, e.g. "NetworkManager (nmcli)"
     display_name: str = ""
 
     @abstractmethod
@@ -95,17 +124,16 @@ class Backend(ABC):
         servers: list[str],
         scope: Scope,
         interface: str | None = None,
+        protocols: ProtocolSettings | None = None,
     ) -> None:
         """Apply the given DNS servers according to scope.
 
-        - Scope.CURRENT: modify the currently-active connection (or `interface`
-                         if given). Only one profile changes.
-        - Scope.ALL:     modify every saved connection profile.
-        - Scope.GLOBAL:  set a system-wide override that applies to all
-                         connections, present and future.
+        `protocols` optionally enables hardening flags. Backends that can't
+        honor a requested flag raise BackendError with a clear message so
+        the user knows why the request failed instead of silently getting
+        less than they asked for.
 
-        Raises BackendError on failure. Should be idempotent: calling twice
-        with the same args must not produce different results.
+        Raises BackendError on failure. Should be idempotent.
         """
 
     @abstractmethod
@@ -119,13 +147,10 @@ class Backend(ABC):
     def describe_current_state(self) -> str:
         """Return a short label describing the current DNS state.
 
-        Used by the CLI to name backup files after the state they contain
-        (not the state that's about to replace them). Common return values:
+        Used by the CLI to name backup files. Common return values:
           - "baseline" — no dnser drop-in / override is active
           - "<provider>" — a known provider's servers are currently set
           - "external" — a non-dnser drop-in / override is present
-          - "managed" — a dnser drop-in exists but its IPs match no known provider
-
-        Default returns "snapshot" — backends override for smarter labels.
+          - "managed" — a dnser drop-in exists but IPs don't match a known provider
         """
         return "snapshot"
