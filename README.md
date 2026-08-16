@@ -77,4 +77,4 @@ Backups: `~/.local/state/dnser/backups/` (last 10 kept).
 
 ## License
 
-Released under the MIT License. See [LICENSE](LICENSE) for details.
+Released under the GPLv3 License. See [LICENSE](LICENSE) for details.
