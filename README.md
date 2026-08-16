@@ -135,6 +135,26 @@ connected before sending so replies from other hosts can't skew the numbers.
 Providers that only answer over DoT (Mullvad) are skipped rather than reported
 as broken.
 
+## Scope and limitations
+
+dnser manages DNS on desktop and laptop Linux systems that use
+NetworkManager, systemd-resolved, or both. It does **not** cover:
+
+- **Server / headless setups without NM or resolved** — if your DNS comes
+  from hand-edited `/etc/resolv.conf`, `resolvd`, `openresolv`, Unbound,
+  dnsmasq as a local forwarder, or a container's built-in resolver, dnser
+  has no backend for it and will say so.
+- **Immutable-root distros** (Fedora Silverblue, NixOS, GNOME OS) — the
+  `/etc` overlays or read-only rootfs may block dnser's config writes even
+  as root.
+- **systemd-networkd without resolved** — networkd manages links but not
+  resolution; dnser needs resolved on the other end.
+- **Non-Linux** — see below.
+- **VPN split-tunnel DNS** — dnser sets system-wide or per-connection DNS
+  but does not touch VPN-specific routing. If your VPN client pushes its
+  own DNS, that configuration sits in a different layer and may override or
+  be overridden by dnser depending on the order of operations.
+
 ## Configuration
 
 Provider presets load from the first file found:
@@ -161,7 +181,6 @@ pytest
 
 ## License
 
-<!-- TODO: add the LICENSE file before the first release -->
 
 Released under the GNU General Public License v3.0 or later.
 See [LICENSE](LICENSE) for the full text.
