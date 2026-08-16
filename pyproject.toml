@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=77.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,9 +8,10 @@ version = "0.4.0"
 description = "Terminal-first DNS switcher for Linux — backend-agnostic (NetworkManager, systemd-resolved)"
 readme = "README.md"
 requires-python = ">=3.9"
-license = { text = "GPL-3.0-or-later" }
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
 authors = [
-    { name = "Alex" }
+    { name = "capitan0n" }
 ]
 keywords = ["dns", "networkmanager", "systemd-resolved", "linux", "cli", "privacy"]
 classifiers = [
@@ -18,18 +19,20 @@ classifiers = [
     "Environment :: Console",
     "Intended Audience :: End Users/Desktop",
     "Intended Audience :: System Administrators",
-    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: System :: Networking",
     "Topic :: Utilities",
 ]
 
-# Runtime dependencies — κρατάμε τα minimum για τη φάση 1
-# Θα προσθέσουμε dnspython (benchmark) και questionary (TUI) σε επόμενες φάσεις
 dependencies = [
-    "rich>=13.0",  # για ωραίο output (πίνακες, χρώματα)
+    "rich>=13.0",
 ]
 
 [project.optional-dependencies]
@@ -38,18 +41,17 @@ dev = [
     "pytest-cov>=4.0",
 ]
 
-# Αυτό είναι το κρίσιμο: δημιουργεί το `dnser` command στο PATH μετά το install
 [project.scripts]
 dnser = "dnser.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/YOUR_USER/dnser"
-Issues = "https://github.com/YOUR_USER/dnser/issues"
+Homepage = "https://github.com/capitan0n/dnser"
+Issues = "https://github.com/capitan0n/dnser/issues"
+Source = "https://github.com/capitan0n/dnser"
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["dnser*"]
 
-# Include το providers.json στο package
 [tool.setuptools.package-data]
 dnser = ["../config/providers.json"]
