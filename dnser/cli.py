@@ -203,15 +203,39 @@ def cmd_list(_args: argparse.Namespace) -> int:
 
     console.print(f"[dim]config: {get_config_path()}[/dim]\n")
 
-    table = Table(show_header=True, header_style="bold cyan")
-    table.add_column("Key")
-    table.add_column("Name")
-    table.add_column("IPv4")
-    table.add_column("Tags")
-    table.add_column("Description", overflow="fold")
+    # show_lines=True draws a rule between every row so long descriptions
+    # and multi-value cells don't visually collide with the next entry.
+    # padding=(0, 1) gives one column of horizontal breathing room on
+    # each side of every cell — the default (0, 0) glues text to borders.
+    table = Table(
+        show_header=True,
+        header_style="bold cyan",
+        show_lines=True,
+        padding=(0, 1),
+    )
+    table.add_column("Key", no_wrap=True, style="bold")
+    table.add_column("Name", no_wrap=True)
+    table.add_column("IPv4", no_wrap=True)
+    table.add_column("Tags", min_width=14)
+    table.add_column("Description", overflow="fold", min_width=32)
 
+    # Group by family (the part of the key before the first '-') and draw
+    # a blank separator row between families. Makes it easy to scan for
+    # 'Quad9 has three variants' without following underlines.
+    previous_family: str | None = None
     for key, p in providers.items():
-        table.add_row(key, p.name, ", ".join(p.ipv4), _render_tags(p.tags), p.description)
+        family = key.split("-", 1)[0]
+        if previous_family is not None and family != previous_family:
+            table.add_section()
+        previous_family = family
+
+        table.add_row(
+            key,
+            p.name,
+            ", ".join(p.ipv4),
+            _render_tags(p.tags),
+            p.description,
+        )
 
     console.print(table)
     return 0
@@ -238,10 +262,16 @@ def cmd_check(_args: argparse.Namespace) -> int:
     table.add_column("Notes", overflow="fold")
 
     for r in results:
-        if r.ok:
-            status = "[green]✓ ok[/green]"
-        else:
+        # Three visual states:
+        #   - fully working: green ✓ ok
+        #   - skipped (DoT-only): yellow ○ skip — not a failure, just untestable here
+        #   - failed: red ✗ fail
+        if not r.ok:
             status = "[red]✗ fail[/red]"
+        elif r.cached_ms is None and r.uncached_ms is None:
+            status = "[yellow]○ skip[/yellow]"
+        else:
+            status = "[green]✓ ok[/green]"
         table.add_row(
             r.provider_key,
             status,
@@ -331,6 +361,14 @@ def cmd_set(args: argparse.Namespace) -> int:
             return 1
         servers = provider.all_servers_dot(include_ipv6=not args.no_ipv6)
     else:
+        # Refuse plain-DNS usage of providers that we know only answer
+        # over DoT — otherwise the user's system will be silently broken.
+        if provider.requires_dot:
+            err_console.print(
+                f"Provider '{provider.key}' only answers over DoT.\n"
+                f"  Re-run with --dot: sudo dnser set {provider.key} --dot"
+            )
+            return 1
         servers = provider.all_servers(include_ipv6=not args.no_ipv6)
 
     try:

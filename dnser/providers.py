@@ -27,6 +27,10 @@ class Provider:
     ipv6: list[str] = field(default_factory=list)
     dot_hostname: str | None = None   # DoT hostname for TLS cert verification
     tags: list[str] = field(default_factory=list)  # short labels for display
+    # Some providers (notably Mullvad) refuse plain UDP/53 queries and
+    # only answer over DoT/DoH. `dnser check` skips plain probes for these,
+    # and `dnser set` warns if used without --dot.
+    requires_dot: bool = False
 
     def all_servers(self, include_ipv6: bool = True) -> list[str]:
         """Return all DNS server IPs (IPv4 first, then IPv6 if requested)."""
@@ -98,6 +102,7 @@ def load_providers() -> dict[str, Provider]:
                 ipv6=ipv6,
                 dot_hostname=data.get("dot_hostname"),
                 tags=tags,
+                requires_dot=bool(data.get("requires_dot", False)),
             )
         except (TypeError, ValueError) as e:
             raise ProviderError(f"Provider '{key}' is malformed: {e}") from e

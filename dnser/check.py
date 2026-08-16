@@ -112,6 +112,17 @@ def _check_one(provider: Provider) -> CheckResult:
             error="no IPv4 servers to probe",
         )
 
+    # DoT-only providers (e.g. Mullvad) will refuse plain UDP/53 queries
+    # and answer with RCODE=5 (REFUSED). Rather than mislead users into
+    # thinking the provider is broken, we skip the probe entirely and
+    # tell them to test it via `dnser set <key> --dot` instead.
+    if provider.requires_dot:
+        return CheckResult(
+            provider.key, provider.name, ok=True,
+            cached_ms=None, uncached_ms=None,
+            error="DoT-only — use `dnser set --dot` to try it",
+        )
+
     target = provider.ipv4[0]
 
     # 1. Cached probe. If this fails, the provider is effectively down

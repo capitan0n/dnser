@@ -25,27 +25,30 @@
   },
   "mullvad": {
     "name": "Mullvad",
-    "description": "Swedish privacy-first. Requires DoT/DoH.",
+    "description": "Swedish privacy-first. Requires DoT (use --dot).",
     "tags": ["no-log"],
     "ipv4": ["194.242.2.2"],
     "ipv6": ["2a07:e340::2"],
-    "dot_hostname": "dns.mullvad.net"
+    "dot_hostname": "dns.mullvad.net",
+    "requires_dot": true
   },
   "mullvad-adblock": {
     "name": "Mullvad Adblock",
-    "description": "Mullvad + ad and tracker blocking.",
+    "description": "Mullvad + ad and tracker blocking. Requires DoT (use --dot).",
     "tags": ["ads", "no-log"],
     "ipv4": ["194.242.2.3"],
     "ipv6": ["2a07:e340::3"],
-    "dot_hostname": "adblock.dns.mullvad.net"
+    "dot_hostname": "adblock.dns.mullvad.net",
+    "requires_dot": true
   },
   "mullvad-family": {
     "name": "Mullvad Family",
-    "description": "Mullvad + ad, tracker and adult-content blocking.",
+    "description": "Mullvad + ad, tracker and adult-content blocking. Requires DoT (use --dot).",
     "tags": ["ads", "family", "no-log"],
     "ipv4": ["194.242.2.6"],
     "ipv6": ["2a07:e340::6"],
-    "dot_hostname": "family.dns.mullvad.net"
+    "dot_hostname": "family.dns.mullvad.net",
+    "requires_dot": true
   },
   "adguard": {
     "name": "AdGuard",
