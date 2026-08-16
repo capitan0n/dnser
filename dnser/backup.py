@@ -1,15 +1,19 @@
 """Backup storage for DNS state snapshots.
 
-Snapshots are stored as JSON files under $XDG_STATE_HOME/dnser/backups/
-(defaults to ~/.local/state/dnser/backups/). Filenames are timestamped so
-they sort chronologically.
+Snapshots are JSON files under $XDG_STATE_HOME/dnser/backups/ (default
+~/.local/state/dnser/backups/). Filenames lead with a UTC timestamp so a
+plain lexicographic sort is also a chronological sort:
 
-We keep the last N backups (default 10) and prune older ones automatically.
+    20260816T142201Z_quad9.json
 
-Sudo handling: when the tool is invoked with sudo, Path.home() returns
-/root, which would silo backups away from the real user's account. We
-detect SUDO_USER and write to the invoking user's home instead, so
-`dnser restore` (without sudo) can still see and use the backups.
+We keep the last MAX_BACKUPS and prune older ones automatically.
+
+Running under sudo: Path.home() would return /root and silo the backups
+away from the account that will later run `dnser restore`. We resolve the
+invoking user from SUDO_USER instead. Because that means root touching a
+user-owned directory, every operation first checks the directory is not a
+symlink and is owned by root or that same user — otherwise an unprivileged
+process could steer root's writes and deletions elsewhere.
 """
 
 from __future__ import annotations
@@ -17,39 +21,36 @@ from __future__ import annotations
 import json
 import os
 import pwd
+import stat
+import string
+from contextlib import suppress
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
 from dnser.backends.base import BackupPayload
 
-
 MAX_BACKUPS = 10
 
 
-def _real_user_home() -> Path:
-    """Return the invoking user's home directory, even under sudo.
+class BackupError(Exception):
+    """Raised when a backup cannot be written, read, or trusted."""
 
-    Order of resolution:
-      1. If SUDO_USER is set (and not 'root'), use that user's pwd entry.
-      2. Otherwise fall back to Path.home() (the current effective user).
-    """
+
+def _real_user_home() -> Path:
+    """Return the invoking user's home directory, even under sudo."""
     sudo_user = os.environ.get("SUDO_USER")
     if sudo_user and sudo_user != "root":
         try:
             return Path(pwd.getpwnam(sudo_user).pw_dir)
         except KeyError:
-            # SUDO_USER points to a nonexistent account — very unusual, fall through.
+            # SUDO_USER names a nonexistent account — very unusual, fall through.
             pass
     return Path.home()
 
 
 def _real_user_ids() -> tuple[int, int] | None:
-    """Return (uid, gid) of the invoking user when running under sudo, else None.
-
-    Used to chown newly-created backup files so the real user can read them
-    without sudo. Returns None when not running under sudo (no chown needed).
-    """
+    """Return (uid, gid) of the invoking user under sudo, else None."""
     sudo_uid = os.environ.get("SUDO_UID")
     sudo_gid = os.environ.get("SUDO_GID")
     if sudo_uid and sudo_gid:
@@ -63,114 +64,152 @@ def _real_user_ids() -> tuple[int, int] | None:
 def _state_dir() -> Path:
     """Return the directory where backups live.
 
-    Respects XDG_STATE_HOME, then falls back to $HOME/.local/state, using
-    the real invoking user's home when running under sudo.
+    Respects XDG_STATE_HOME, but when running as root that variable is
+    attacker-controllable via `sudo XDG_STATE_HOME=... dnser ...`, and
+    everything below gets chowned to the invoking user. So under root we
+    only honor it if it actually points inside that user's home.
     """
+    home = _real_user_home()
     xdg = os.environ.get("XDG_STATE_HOME")
-    if xdg:
-        base = Path(xdg)
-    else:
-        base = _real_user_home() / ".local" / "state"
+    base = Path(xdg) if xdg else home / ".local" / "state"
+
+    if os.geteuid() == 0 and xdg:
+        try:
+            resolved = base.resolve()
+        except OSError:
+            resolved = base
+        if resolved != home and home not in resolved.parents:
+            base = home / ".local" / "state"
+
     return base / "dnser" / "backups"
 
 
 def _chown_to_real_user(path: Path) -> None:
-    """If running under sudo, hand ownership of `path` back to the real user."""
+    """Under sudo, hand ownership of `path` back to the invoking user."""
     ids = _real_user_ids()
     if ids is None:
         return
     uid, gid = ids
-    try:
+    with suppress(OSError):
         os.chown(path, uid, gid)
-    except OSError:
-        # Best-effort; user can chown manually if needed.
-        pass
+
+
+def _assert_safe_dir(directory: Path) -> None:
+    """Refuse to write or delete as root inside a directory we don't trust."""
+    if os.geteuid() != 0:
+        return
+    ids = _real_user_ids()
+    allowed = {0, ids[0]} if ids else {0}
+    for path in (directory, directory.parent):
+        try:
+            info = path.lstat()
+        except OSError:
+            continue
+        if stat.S_ISLNK(info.st_mode):
+            raise BackupError(f"{path} is a symlink — refusing to use it as root.")
+        if info.st_uid not in allowed:
+            raise BackupError(
+                f"{path} is owned by uid {info.st_uid}, which is neither root nor "
+                "the invoking user — refusing to write backups there."
+            )
+
+
+def _ensure_state_dir() -> Path:
+    """Create the backup directory if needed and return it, safely."""
+    directory = _state_dir()
+    # Only chown what we actually create — never pre-existing parents.
+    created: list[Path] = []
+    for candidate in (directory.parent, directory):
+        if not candidate.exists():
+            created.append(candidate)
+    directory.mkdir(parents=True, exist_ok=True)
+    for path in created:
+        _chown_to_real_user(path)
+    _assert_safe_dir(directory)
+    return directory
 
 
 def save(payload: BackupPayload, label: str | None = None) -> Path:
     """Serialize a snapshot to a timestamped JSON file. Returns its path.
 
-    If `label` is given (e.g. the provider key), it is prefixed to the
-    filename for readability: 'quad9_20260815T222325Z.json' instead of
-    just '20260815T222325Z.json'. When no label is provided we fall back
-    to 'snapshot_<timestamp>.json' so the file is still identifiable as
-    a backup.
+    The filename is '<timestamp>_<label>.json'. Timestamp first so that
+    sorting by name is sorting by age — putting the label first would make
+    'quad9_...' sort after 'cloudflare_...' regardless of when each ran,
+    and `restore` would then hand back the wrong state.
 
-    Labels are sanitized to a safe subset — anything outside [a-z0-9_-]
-    is replaced with '-' to keep filenames portable.
-
-    Also prunes old backups beyond MAX_BACKUPS.
+    Labels are reduced to [a-z0-9_-]; anything else becomes '-'.
     """
-    directory = _state_dir()
-    directory.mkdir(parents=True, exist_ok=True)
-    # If we just created the directory tree while running under sudo, make
-    # sure the user owns it — otherwise they can't write future backups.
-    _chown_to_real_user(directory)
-    for parent in (directory.parent, directory.parent.parent):
-        if parent.exists():
-            _chown_to_real_user(parent)
+    directory = _ensure_state_dir()
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     safe_label = _sanitize_label(label) if label else "snapshot"
-    path = directory / f"{safe_label}_{timestamp}.json"
+    path = _unique_path(directory, timestamp, safe_label)
 
-    path.write_text(
-        json.dumps(asdict(payload), indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    content = json.dumps(asdict(payload), indent=2, ensure_ascii=False)
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
+        fd = os.open(path, flags, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+    except OSError as exc:
+        raise BackupError(f"Failed to write backup {path}: {exc}") from exc
     _chown_to_real_user(path)
 
     _prune(directory)
     return path
 
 
-def _sanitize_label(label: str) -> str:
-    """Reduce a label to characters safe for filenames across filesystems.
+def _unique_path(directory: Path, timestamp: str, label: str) -> Path:
+    """Return a non-colliding path for two saves within the same second.
 
-    Keep [a-z0-9_-], collapse anything else to '-'. Lowercased for
-    consistency with provider keys (which are always lowercase).
+    The disambiguator is a letter appended to the timestamp rather than a
+    digit or dash, because it has to sort *after* the '_' separator —
+    otherwise the second save of a given second would sort as the older
+    one and `restore` would pick the wrong file.
     """
-    cleaned = []
-    for ch in label.lower():
-        if ch.isalnum() or ch in "_-":
-            cleaned.append(ch)
-        else:
-            cleaned.append("-")
-    result = "".join(cleaned).strip("-")
-    return result or "snapshot"
+    path = directory / f"{timestamp}_{label}.json"
+    if not path.exists():
+        return path
+    for suffix in string.ascii_lowercase:
+        candidate = directory / f"{timestamp}{suffix}_{label}.json"
+        if not candidate.exists():
+            return candidate
+    raise BackupError("Too many backups written within the same second.")
+
+
+def _sanitize_label(label: str) -> str:
+    """Reduce a label to characters safe for filenames on any filesystem."""
+    cleaned = [ch if (ch.isalnum() or ch in "_-") else "-" for ch in label.lower()]
+    return "".join(cleaned).strip("-") or "snapshot"
 
 
 def list_backups() -> list[Path]:
-    """Return all backup paths, newest first."""
+    """Return all backup paths, newest first.
+
+    Safe because filenames lead with a fixed-width UTC timestamp, so
+    lexicographic order equals chronological order.
+    """
     directory = _state_dir()
-    if not directory.exists():
+    if not directory.is_dir():
         return []
-    files = sorted(directory.glob("*.json"), reverse=True)
-    return files
+    return sorted(directory.glob("*.json"), reverse=True)
 
 
 def load(path: Path) -> BackupPayload:
-    """Load a snapshot from disk into a BackupPayload."""
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    return BackupPayload(
-        backend_name=raw["backend_name"],
-        data=raw["data"],
-    )
-
-
-def load_latest() -> BackupPayload | None:
-    """Load the most recent snapshot, or None if none exists."""
-    backups = list_backups()
-    if not backups:
-        return None
-    return load(backups[0])
+    """Load a snapshot from disk. Raises BackupError on corrupt files."""
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        return BackupPayload(
+            backend_name=str(raw["backend_name"]),
+            data=raw["data"],
+        )
+    except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise BackupError(f"Corrupt backup {path.name}: {exc}") from exc
 
 
 def _prune(directory: Path) -> None:
-    """Delete oldest backups beyond MAX_BACKUPS."""
+    """Delete the oldest backups beyond MAX_BACKUPS."""
     files = sorted(directory.glob("*.json"), reverse=True)
     for old in files[MAX_BACKUPS:]:
-        try:
+        with suppress(OSError):
             old.unlink()
-        except OSError:
-            pass

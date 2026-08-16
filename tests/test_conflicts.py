@@ -1,76 +1,73 @@
 """Tests for conflict detection.
 
-Regression coverage for the substring-match bug where 'DNS=' was matching
-inside 'MulticastDNS=no', 'DNSOverTLS=', 'DNSSEC=', etc.
+Regression coverage for the substring-match bug where 'DNS=' matched
+inside 'MulticastDNS=no', 'DNSOverTLS=' and 'DNSSEC='.
 """
 
 from __future__ import annotations
 
 import pytest
 
+from dnser import conflicts
 from dnser.conflicts import (
-    _classify_nm_file,
-    _file_has_any_keys,
-    _line_starts_with_any,
+    file_has_any_keys,
+    line_starts_with_any,
+    nm_file_conflicts,
     scan_conflicts,
 )
 
+RESOLVED_KEYS = ("DNS=", "FallbackDNS=", "Domains=")
+NM_KEYS = ("servers=", "ignore-auto-dns")
+
 
 # ----------------------------------------------------------------------
-# Unit: line matching
+# Line matching
 # ----------------------------------------------------------------------
 
-class TestLineStartsWithAny:
-    keys = ("DNS=", "FallbackDNS=", "Domains=")
-
-    @pytest.mark.parametrize("line", [
-        "DNS=9.9.9.9",
-        "FallbackDNS=1.1.1.1",
-        "Domains=~.",
-        "DNS=9.9.9.9#dns.quad9.net 149.112.112.112",
-    ])
+class TestLineMatching:
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "DNS=9.9.9.9",
+            "FallbackDNS=1.1.1.1",
+            "Domains=~.",
+            "DNS=9.9.9.9#dns.quad9.net 149.112.112.112",
+        ],
+    )
     def test_matches_real_dns_lines(self, line):
-        assert _line_starts_with_any(line, self.keys) is True
+        assert line_starts_with_any(line, RESOLVED_KEYS) is True
 
-    @pytest.mark.parametrize("line", [
-        "DNSOverTLS=opportunistic",  # <-- previously false-positive
-        "DNSSEC=no",                  # <-- previously false-positive
-        "MulticastDNS=no",            # <-- the one that bit us
-        "Cache=yes",
-        "LLMNR=no",
-        "DNSStubListener=yes",
-    ])
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "DNSOverTLS=opportunistic",
+            "DNSSEC=no",
+            "MulticastDNS=no",
+            "Cache=yes",
+            "LLMNR=no",
+            "DNSStubListener=yes",
+        ],
+    )
     def test_does_not_match_similar_keys(self, line):
-        assert _line_starts_with_any(line, self.keys) is False
+        assert line_starts_with_any(line, RESOLVED_KEYS) is False
 
-
-class TestDottedKeys:
-    """NM uses dotted key notation like ipv4.ignore-auto-dns=true.
-
-    The matcher must recognize these as keys even though the line doesn't
-    start with the bare key name.
-    """
-    conflict_keys = ("servers=", "ignore-auto-dns")
-
-    @pytest.mark.parametrize("line", [
-        "ipv4.ignore-auto-dns=true",
-        "ipv6.ignore-auto-dns=yes",
-        "servers=1.1.1.1;1.0.0.1;",
-    ])
+    @pytest.mark.parametrize(
+        "line",
+        ["ipv4.ignore-auto-dns=true", "ipv6.ignore-auto-dns=yes", "servers=1.1.1.1;1.0.0.1;"],
+    )
     def test_matches_dotted_and_bare_keys(self, line):
-        assert _line_starts_with_any(line, self.conflict_keys) is True
+        assert line_starts_with_any(line, NM_KEYS) is True
 
-    @pytest.mark.parametrize("line", [
-        "dns=systemd-resolved",      # integration key, not a conflict
-        "systemd-resolved=true",     # integration key, not a conflict
-        "connection.autoconnect=yes", # unrelated dotted key
-    ])
-    def test_does_not_match_unrelated_dotted_keys(self, line):
-        assert _line_starts_with_any(line, self.conflict_keys) is False
+    @pytest.mark.parametrize(
+        "line",
+        ["dns=systemd-resolved", "systemd-resolved=true", "connection.autoconnect=yes"],
+    )
+    def test_does_not_match_unrelated_keys(self, line):
+        assert line_starts_with_any(line, NM_KEYS) is False
 
 
 # ----------------------------------------------------------------------
-# Unit: file scanning
+# File scanning
 # ----------------------------------------------------------------------
 
 CLEAN_RESOLVED_CONF = """\
@@ -91,26 +88,28 @@ DNSOverTLS=yes
 """
 
 
-def test_clean_resolved_conf_has_no_active_dns_keys(tmp_path):
-    conf = tmp_path / "resolved.conf"
-    conf.write_text(CLEAN_RESOLVED_CONF)
-    assert _file_has_any_keys(conf, ("DNS=", "FallbackDNS=", "Domains=")) is False
+class TestFileScanning:
+    def test_clean_conf_has_no_active_dns_keys(self, tmp_path):
+        conf = tmp_path / "resolved.conf"
+        conf.write_text(CLEAN_RESOLVED_CONF)
+        assert file_has_any_keys(conf, RESOLVED_KEYS) is False
 
+    def test_dirty_conf_is_detected(self, tmp_path):
+        conf = tmp_path / "resolved.conf"
+        conf.write_text(DIRTY_RESOLVED_CONF)
+        assert file_has_any_keys(conf, RESOLVED_KEYS) is True
 
-def test_dirty_resolved_conf_is_detected(tmp_path):
-    conf = tmp_path / "resolved.conf"
-    conf.write_text(DIRTY_RESOLVED_CONF)
-    assert _file_has_any_keys(conf, ("DNS=", "FallbackDNS=", "Domains=")) is True
+    def test_commented_lines_are_ignored(self, tmp_path):
+        conf = tmp_path / "resolved.conf"
+        conf.write_text("[Resolve]\n#DNS=9.9.9.9\n#FallbackDNS=1.1.1.1\n")
+        assert file_has_any_keys(conf, RESOLVED_KEYS) is False
 
-
-def test_commented_lines_are_ignored(tmp_path):
-    conf = tmp_path / "resolved.conf"
-    conf.write_text("[Resolve]\n#DNS=9.9.9.9\n#FallbackDNS=1.1.1.1\n")
-    assert _file_has_any_keys(conf, ("DNS=", "FallbackDNS=")) is False
+    def test_unreadable_file_is_not_a_conflict(self, tmp_path):
+        assert file_has_any_keys(tmp_path / "nope.conf", RESOLVED_KEYS) is False
 
 
 # ----------------------------------------------------------------------
-# Unit: NM file classification
+# NetworkManager drop-in classification
 # ----------------------------------------------------------------------
 
 NM_INTEGRATION_ONLY = """\
@@ -134,25 +133,57 @@ ipv6.ignore-auto-dns=true
 """
 
 
-def test_nm_integration_file_is_not_a_conflict(tmp_path):
-    conf = tmp_path / "00-dns-resolved.conf"
-    conf.write_text(NM_INTEGRATION_ONLY)
-    assert _classify_nm_file(conf) == "integration"
+class TestNmClassification:
+    def test_integration_file_is_not_a_conflict(self, tmp_path):
+        conf = tmp_path / "00-dns-resolved.conf"
+        conf.write_text(NM_INTEGRATION_ONLY)
+        assert nm_file_conflicts(conf) is False
+
+    def test_global_dns_is_a_conflict(self, tmp_path):
+        conf = tmp_path / "dns.conf"
+        conf.write_text(NM_CONFLICT_GLOBAL)
+        assert nm_file_conflicts(conf) is True
+
+    def test_ignore_auto_dns_is_a_conflict(self, tmp_path):
+        conf = tmp_path / "no-auto-dns.conf"
+        conf.write_text(NM_CONFLICT_IGNORE_AUTO)
+        assert nm_file_conflicts(conf) is True
+
+    def test_empty_file_is_not_a_conflict(self, tmp_path):
+        conf = tmp_path / "empty.conf"
+        conf.write_text("# just a comment\n\n[main]\n")
+        assert nm_file_conflicts(conf) is False
 
 
-def test_nm_global_dns_is_a_conflict(tmp_path):
-    conf = tmp_path / "dns.conf"
-    conf.write_text(NM_CONFLICT_GLOBAL)
-    assert _classify_nm_file(conf) == "conflict"
+# ----------------------------------------------------------------------
+# scan_conflicts end to end
+# ----------------------------------------------------------------------
 
+class TestScanConflicts:
+    def test_reports_foreign_dropins_but_skips_our_own(self, tmp_path, monkeypatch):
+        nm_dir = tmp_path / "nm"
+        resolved_dir = tmp_path / "resolved.conf.d"
+        nm_dir.mkdir()
+        resolved_dir.mkdir()
 
-def test_nm_ignore_auto_dns_is_a_conflict(tmp_path):
-    conf = tmp_path / "no-auto-dns.conf"
-    conf.write_text(NM_CONFLICT_IGNORE_AUTO)
-    assert _classify_nm_file(conf) == "conflict"
+        (nm_dir / "99-other.conf").write_text(NM_CONFLICT_GLOBAL)
+        (nm_dir / "00-dnser-global.conf").write_text(NM_CONFLICT_GLOBAL)
+        (resolved_dir / "50-foreign.conf").write_text(DIRTY_RESOLVED_CONF)
+        (resolved_dir / "00-dnser.conf").write_text(DIRTY_RESOLVED_CONF)
 
+        monkeypatch.setattr(conflicts, "NM_CONF_DIR", nm_dir)
+        monkeypatch.setattr(conflicts, "RESOLVED_CONF_DIR", resolved_dir)
+        monkeypatch.setattr(conflicts, "RESOLVED_CONF", tmp_path / "resolved.conf")
 
-def test_nm_empty_file_is_empty(tmp_path):
-    conf = tmp_path / "empty.conf"
-    conf.write_text("# just a comment\n\n[main]\n")
-    assert _classify_nm_file(conf) == "empty"
+        warnings = scan_conflicts()
+
+        assert len(warnings) == 2
+        assert any("99-other.conf" in w for w in warnings)
+        assert any("50-foreign.conf" in w for w in warnings)
+        assert not any("dnser" in w.rsplit("/", 1)[-1] for w in warnings)
+
+    def test_no_directories_means_no_warnings(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(conflicts, "NM_CONF_DIR", tmp_path / "missing-nm")
+        monkeypatch.setattr(conflicts, "RESOLVED_CONF_DIR", tmp_path / "missing-resolved")
+        monkeypatch.setattr(conflicts, "RESOLVED_CONF", tmp_path / "missing.conf")
+        assert scan_conflicts() == []

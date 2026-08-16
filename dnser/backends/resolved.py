@@ -1,20 +1,17 @@
 """systemd-resolved backend.
 
-Manages DNS by writing drop-in files under /etc/systemd/resolved.conf.d/
-and using `resolvectl` for live queries. Persistent across reboots.
+Manages DNS by writing a drop-in under /etc/systemd/resolved.conf.d/ and
+using `resolvectl` for live queries. Persistent across reboots.
 
-Why drop-ins instead of editing /etc/systemd/resolved.conf directly:
-  - The main file often contains user or distro comments/settings we
-    shouldn't clobber.
-  - systemd merges all *.conf files in resolved.conf.d/ alphabetically,
-    with later values winning. Our "00-" prefix ensures we're read first
-    but overridable by any later file the user might add.
-  - Removing our drop-in cleanly reverts to the pre-dnser state.
+Why a drop-in instead of editing /etc/systemd/resolved.conf directly:
+  - The main file usually holds distro or user comments we shouldn't clobber.
+  - systemd merges every *.conf in resolved.conf.d/ alphabetically, later
+    values winning. Our "00-" prefix means we load first and stay
+    overridable by anything the user adds later.
+  - Deleting our drop-in cleanly reverts to the pre-dnser state.
 
-Scopes for this backend:
-  - GLOBAL: write /etc/systemd/resolved.conf.d/00-dnser.conf (default,
-            because resolved doesn't have "per-connection" the way NM does)
-  - CURRENT / ALL: same as GLOBAL for now — resolved is inherently global.
+Scopes: resolved has no per-connection concept, so every scope resolves to
+GLOBAL. set_dns reports that back so the CLI can tell the user.
 """
 
 from __future__ import annotations
@@ -30,13 +27,34 @@ from dnser.backends.base import (
     DNSState,
     ProtocolSettings,
     Scope,
-    sudo_hint,
+    remove_system_file,
+    write_system_file,
 )
 from dnser.providers import identify_provider
 
-
 # Drop-in path. "00-" so we load first among any user drop-ins.
 DROPIN_PATH = Path("/etc/systemd/resolved.conf.d/00-dnser.conf")
+
+DNSER_HEADER = "# Managed by dnser — do not edit by hand."
+
+# Keys we are willing to write back when restoring a backup. Backups live
+# in a user-writable directory but are applied as root, so restoring
+# unvalidated content would let an unprivileged process dictate a
+# root-owned config file. Anything outside this set is refused.
+_ALLOWED_RESOLVE_KEYS = frozenset(
+    {
+        "DNS",
+        "FallbackDNS",
+        "Domains",
+        "DNSOverTLS",
+        "DNSSEC",
+        "LLMNR",
+        "MulticastDNS",
+        "Cache",
+        "DNSStubListener",
+        "ReadEtcHosts",
+    }
+)
 
 
 class ResolvedBackend(Backend):
@@ -64,16 +82,16 @@ class ResolvedBackend(Backend):
     # ------------------------------------------------------------------
     def get_current(self) -> DNSState:
         """Return DNS state as seen by resolved (per-link, plus global)."""
-        state = DNSState(backend_name=self.display_name)
+        state = DNSState()
 
         try:
             output = self._run(["resolvectl", "dns"])
-        except BackendError as e:
-            state.notes.append(f"Could not query resolved: {e}")
+        except BackendError as exc:
+            state.notes.append(f"Could not query resolved: {exc}")
             return state
 
-        for line in output.strip().splitlines():
-            line = line.strip()
+        for raw in output.strip().splitlines():
+            line = raw.strip()
             if not line or ":" not in line:
                 continue
             label, _, servers_raw = line.partition(":")
@@ -88,9 +106,8 @@ class ResolvedBackend(Backend):
                 if iface == "lo":
                     continue
                 state.per_interface[iface] = servers
-            elif label.lower() == "global":
-                if servers:
-                    state.per_interface["(global)"] = servers
+            elif label.lower() == "global" and servers:
+                state.per_interface["(global)"] = servers
 
         if DROPIN_PATH.exists():
             state.notes.append(f"dnser drop-in active: {DROPIN_PATH}")
@@ -102,7 +119,7 @@ class ResolvedBackend(Backend):
     # describe_current_state
     # ------------------------------------------------------------------
     def describe_current_state(self) -> str:
-        """Label for backup filename — describes what's in the snapshot."""
+        """Label for the backup filename — describes what's being snapshotted."""
         if not DROPIN_PATH.exists():
             return "baseline"
         try:
@@ -113,11 +130,10 @@ class ResolvedBackend(Backend):
         if "Managed by dnser" not in content:
             return "external"
 
-        for line in content.splitlines():
-            line = line.strip()
+        for raw in content.splitlines():
+            line = raw.strip()
             if line.startswith("DNS="):
-                servers = line[4:].split()
-                provider_key = identify_provider(servers)
+                provider_key = identify_provider(line[len("DNS=") :].split())
                 if provider_key:
                     return provider_key
                 break
@@ -127,10 +143,10 @@ class ResolvedBackend(Backend):
     # snapshot
     # ------------------------------------------------------------------
     def snapshot(self) -> BackupPayload:
-        """Capture existing drop-in content (or None if absent).
+        """Capture the existing drop-in content (or None if absent).
 
-        The drop-in file contains the entire state we manage (DNS +
-        protocol settings), so a single file is enough to restore everything.
+        The drop-in holds the entire state we manage (DNS plus protocol
+        settings), so one file is enough to restore everything.
         """
         dropin_content: str | None = None
         if DROPIN_PATH.exists():
@@ -152,27 +168,46 @@ class ResolvedBackend(Backend):
         scope: Scope,
         interface: str | None = None,
         protocols: ProtocolSettings | None = None,
-    ) -> None:
-        """Write drop-in and restart resolved.
-
-        All scopes are treated as global for this backend. `interface` is
-        accepted for CLI parity but ignored. `protocols` fully supported.
-        """
+        dry_run: bool = False,
+    ) -> tuple[Scope, list[str]]:
+        """Write the drop-in and restart resolved. Always global in effect."""
         if not servers:
             raise BackendError("set_dns called with empty server list")
-        del interface  # resolved is inherently global; accept for CLI parity
-        _ = scope
+        del interface, scope  # resolved is inherently global
 
-        settings = protocols or ProtocolSettings()
-        content = self._build_dropin(servers, settings)
-        self._write_dropin(content)
-        self._restart_resolved()
+        content = self._build_dropin(servers, protocols or ProtocolSettings())
+        actions = [f"write {DROPIN_PATH}"]
+        actions += [f"  | {line}" for line in content.splitlines()]
+        actions.append("run: systemctl restart systemd-resolved")
+
+        if not dry_run:
+            write_system_file(DROPIN_PATH, content)
+            self._restart_resolved()
+
+        return Scope.GLOBAL, actions
+
+    # ------------------------------------------------------------------
+    # unset
+    # ------------------------------------------------------------------
+    def unset(self, dry_run: bool = False) -> list[str]:
+        """Delete the drop-in so resolved falls back to its own defaults."""
+        if not DROPIN_PATH.exists():
+            return [f"nothing to do: {DROPIN_PATH} does not exist"]
+
+        actions = [
+            f"remove {DROPIN_PATH}",
+            "run: systemctl restart systemd-resolved",
+        ]
+        if not dry_run:
+            remove_system_file(DROPIN_PATH)
+            self._restart_resolved()
+        return actions
 
     # ------------------------------------------------------------------
     # restore_from
     # ------------------------------------------------------------------
     def restore_from(self, payload: BackupPayload) -> None:
-        """Restore drop-in to its snapshot state (or remove it)."""
+        """Restore the drop-in to its snapshot state (or remove it)."""
         if payload.backend_name != self.name:
             raise BackendError(
                 f"Backup was taken with backend '{payload.backend_name}', "
@@ -180,69 +215,55 @@ class ResolvedBackend(Backend):
             )
         original = payload.data.get("dropin_content")
         if original is None:
-            self._remove_dropin()
+            remove_system_file(DROPIN_PATH)
         else:
-            self._write_dropin(original)
+            if not isinstance(original, str):
+                raise BackendError("Corrupt backup: dropin_content is not text")
+            validate_dropin(original)
+            write_system_file(DROPIN_PATH, original)
         self._restart_resolved()
 
     # ==================================================================
     # Internal: subprocess helper
     # ==================================================================
-    def _run(self, args: list[str], sudo: bool = False) -> str:
-        cmd = (["sudo", "--non-interactive"] + args) if sudo else args
+    def _run(self, args: list[str]) -> str:
         try:
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=15,
-            )
-        except subprocess.TimeoutExpired as e:
-            raise BackendError(f"Command timed out: {' '.join(cmd)}") from e
-        except OSError as e:
-            raise BackendError(f"Failed to run {cmd[0]}: {e}") from e
+            result = subprocess.run(args, capture_output=True, text=True, timeout=15)
+        except subprocess.TimeoutExpired as exc:
+            raise BackendError(f"Command timed out: {' '.join(args)}") from exc
+        except OSError as exc:
+            raise BackendError(f"Failed to run {args[0]}: {exc}") from exc
         if result.returncode != 0:
             stderr = result.stderr.strip() or "no error message"
-            if sudo and "password is required" in stderr.lower():
-                raise BackendError(
-                    "This operation requires root privileges.\n"
-                    f"  Re-run: {sudo_hint()}"
-                )
             raise BackendError(
-                f"Command failed ({result.returncode}): {' '.join(cmd)}\n{stderr}"
+                f"Command failed ({result.returncode}): {' '.join(args)}\n{stderr}"
             )
         return result.stdout
 
     # ==================================================================
-    # Internal: drop-in file management
+    # Internal: drop-in construction
     # ==================================================================
     def _build_dropin(self, servers: list[str], settings: ProtocolSettings) -> str:
-        """Build the [Resolve] section contents for a drop-in file.
+        """Build the [Resolve] drop-in contents.
 
-        DoT behavior:
-          - If any server has '#hostname' syntax, DoT is required → 'yes'
-            (or 'yes' + explicit strict if dot_strict).
-          - dot_strict without any DoT servers is a config error caught upstream.
-          - Otherwise 'opportunistic' (default resolved behavior).
+        DoT: servers carrying '#hostname' mean the caller asked for
+        DNS-over-TLS, so we write DNSOverTLS=yes, which systemd treats as
+        fail-closed (an unencrypted fallback is never attempted). Plain
+        IPs get 'opportunistic'.
 
-        Protocol lines are only written when the user explicitly requested them,
-        so we don't silently override resolved's defaults for flags left unset.
+        Protocol lines are written only when explicitly requested, so we
+        never silently override resolved's defaults for unset flags.
         """
-        has_dot_servers = any("#" in s for s in servers)
-
-        if settings.dot_strict:
-            dot_value = "yes"  # strict = fail closed
-        elif has_dot_servers:
-            dot_value = "yes"  # DoT servers imply required DoT
-        else:
-            dot_value = "opportunistic"
+        dot_value = "yes" if any("#" in s for s in servers) else "opportunistic"
 
         lines = [
-            "# Managed by dnser — do not edit by hand.",
-            "# Remove with: dnser restore",
+            DNSER_HEADER,
+            "# Remove with: dnser unset  (or: dnser restore)",
             "[Resolve]",
             f"DNS={' '.join(servers)}",
             "Domains=~.",
             f"DNSOverTLS={dot_value}",
         ]
-
         if settings.dnssec:
             lines.append("DNSSEC=yes")
         if settings.no_llmnr:
@@ -252,50 +273,9 @@ class ResolvedBackend(Backend):
 
         return "\n".join(lines) + "\n"
 
-    def _write_dropin(self, content: str) -> None:
-        """Write the drop-in file. Uses sudo/tee if not writable directly."""
-        try:
-            DROPIN_PATH.parent.mkdir(parents=True, exist_ok=True)
-            DROPIN_PATH.write_text(content, encoding="utf-8")
-            return
-        except (PermissionError, OSError):
-            pass
-        proc = subprocess.run(
-            ["sudo", "--non-interactive", "tee", str(DROPIN_PATH)],
-            input=content, capture_output=True, text=True, timeout=10,
-        )
-        if proc.returncode != 0:
-            stderr = proc.stderr.strip() or "no error message"
-            if "password is required" in stderr.lower():
-                raise BackendError(
-                    f"Writing {DROPIN_PATH} requires root.\n"
-                    f"  Re-run: {sudo_hint()}"
-                )
-            raise BackendError(f"Failed to write drop-in: {stderr}")
-
-    def _remove_dropin(self) -> None:
-        if not DROPIN_PATH.exists():
-            return
-        try:
-            DROPIN_PATH.unlink()
-            return
-        except PermissionError:
-            pass
-        proc = subprocess.run(
-            ["sudo", "--non-interactive", "rm", "-f", str(DROPIN_PATH)],
-            capture_output=True, text=True, timeout=10,
-        )
-        if proc.returncode != 0:
-            raise BackendError(
-                f"Failed to remove {DROPIN_PATH}: {proc.stderr.strip()}"
-            )
-
     def _restart_resolved(self) -> None:
         """Restart systemd-resolved so drop-in changes take effect."""
-        try:
-            self._run(["systemctl", "restart", "systemd-resolved"])
-        except BackendError:
-            self._run(["systemctl", "restart", "systemd-resolved"], sudo=True)
+        self._run(["systemctl", "restart", "systemd-resolved"])
 
     # ==================================================================
     # Internal: protocol status extraction
@@ -303,11 +283,12 @@ class ResolvedBackend(Backend):
     def _read_protocol_state(self) -> dict[str, str]:
         """Parse `resolvectl status` for LLMNR/mDNS/DNSSEC/DoT global state.
 
-        The 'Protocols:' line format (as of systemd 250+):
+        The 'Protocols:' line (systemd 250+) looks like:
           Protocols: -LLMNR -mDNS DNSOverTLS=opportunistic DNSSEC=no/unsupported
 
-        Leading '-' means disabled; no prefix means enabled. Key=value pairs
-        are explicit. We normalize everything into a flat dict.
+        A leading '-' means disabled, no prefix means enabled, key=value
+        pairs are explicit. We normalize all three into a flat dict and
+        take only the first (global) line — per-link ones come later.
         """
         protocols: dict[str, str] = {}
         try:
@@ -315,23 +296,37 @@ class ResolvedBackend(Backend):
         except BackendError:
             return protocols
 
-        for line in output.splitlines():
-            stripped = line.strip()
+        for raw in output.splitlines():
+            stripped = raw.strip()
             if not stripped.startswith("Protocols:"):
                 continue
-            # Only take the first (global) match — per-link Protocols lines
-            # come later and would overwrite.
-            payload = stripped[len("Protocols:"):].strip()
+            payload = stripped[len("Protocols:") :].strip()
             for token in payload.split():
                 if "=" in token:
-                    # e.g. 'DNSOverTLS=opportunistic'
                     key, _, value = token.partition("=")
                     protocols[key] = value
                 elif token.startswith("-"):
-                    # e.g. '-LLMNR' -> disabled
                     protocols[token[1:]] = "no"
                 else:
-                    # e.g. 'LLMNR' (no prefix) -> enabled
                     protocols[token] = "yes"
             break
         return protocols
+
+
+def validate_dropin(content: str) -> None:
+    """Raise BackendError unless `content` is a plain [Resolve] drop-in.
+
+    Applied to anything read back from a backup file before it is written
+    into /etc as root.
+    """
+    for raw in content.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("["):
+            if line != "[Resolve]":
+                raise BackendError(f"Refusing to restore unknown section: {line}")
+            continue
+        key = line.split("=", 1)[0].strip()
+        if key not in _ALLOWED_RESOLVE_KEYS:
+            raise BackendError(f"Refusing to restore unknown resolved key: {key}")

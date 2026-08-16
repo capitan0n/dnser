@@ -1,19 +1,19 @@
 [build-system]
-requires = ["setuptools>=77.0", "wheel"]
+requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "dnser"
-version = "0.4.0"
 description = "Terminal-first DNS switcher for Linux — backend-agnostic (NetworkManager, systemd-resolved)"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
+dynamic = ["version"]
 authors = [
-    { name = "capitan0n" }
+    { name = "capitan0n" },
 ]
-keywords = ["dns", "networkmanager", "systemd-resolved", "linux", "cli", "privacy"]
+keywords = ["dns", "networkmanager", "systemd-resolved", "linux", "cli", "privacy", "dot"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
@@ -22,42 +22,65 @@ classifiers = [
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: Name Service (DNS)",
     "Topic :: System :: Networking",
+    "Topic :: System :: Systems Administration",
     "Topic :: Utilities",
 ]
 
 dependencies = [
-    "rich>=13.0",  # για ωραίο output (πίνακες, χρώματα)
+    "rich>=13.0",  # tables and colour for terminal output
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
+    "ruff>=0.6",
 ]
 
-# Δημιουργεί το `dnser` command στο PATH μετά το install
+# Creates the `dnser` command on PATH after install.
 [project.scripts]
 dnser = "dnser.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/capitan0n/dnser"
-Issues = "https://github.com/capitan0n/dnser/issues"
 Source = "https://github.com/capitan0n/dnser"
+Issues = "https://github.com/capitan0n/dnser/issues"
+
+# Single source of truth for the version number: dnser/__init__.py.
+[tool.setuptools.dynamic]
+version = { attr = "dnser.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["dnser*"]
 
-# providers.json ζει στο repo root — bundled μέσω package-data ώστε να
-# φτάνει και σε wheel installs (αντιγράφεται στο πακέτο κατά το build).
-# Editable installs (pipx install --editable .) βρίσκουν το ίδιο αρχείο
-# απευθείας από το repo root — το providers.py ψάχνει σε ../providers.json
-# σε σχέση με τον φάκελο του package.
+# providers.json lives inside the package, so it ships in wheels and
+# sdists alike. A path like "../providers.json" escapes the package
+# directory and is not portable across setuptools versions.
 [tool.setuptools.package-data]
-dnser = ["../providers.json"]
+dnser = ["providers.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "S"]
+ignore = [
+    "S404",  # importing subprocess is the point of this tool
+    "S603",  # every subprocess call uses a fixed argv list, never a shell
+    "S607",  # nmcli/resolvectl/systemctl are resolved via PATH by design
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]  # assert is how tests work
