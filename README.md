@@ -1,9 +1,6 @@
 # dnser
 
-**Terminal-first DNS switcher for Linux.** Detects whether NetworkManager or
-systemd-resolved actually controls DNS on your machine, speaks its native
-configuration language, and switches you to a privacy-friendly resolver — with
-DNS-over-TLS, latency benchmarking, and a one-command undo.
+**A simple tool to configure DNS on Linux**, detects whether NetworkManager or systemd-resolved controls your DNS, applies the change through its native mechanism, and undoes it with one command.
 
 ```console
 $ sudo dnser set quad9 --dot --no-llmnr
@@ -14,9 +11,7 @@ backup: 20260816T142201Z_baseline.json
 
 ## Why
 
-Most Linux DNS switchers assume a single backend, ship as tray or GUI apps, or
-only touch the active connection — so every new Wi-Fi network silently resets
-you. `dnser` detects the real DNS layer, warns about conflicting configuration
+Most Linux DNS tools assume a single backend, or only touch the active connection, so every new Wi-Fi network silently resets you.`dnser` detects the real DNS layer, warns about conflicting configuration
 elsewhere on the system, and supports a **global override** that persists across
 networks.
 
@@ -100,8 +95,7 @@ sudo dnser restore --index 2 # restore a specific backup
 | `--all`     | Every saved connection  | No                        |
 | `--global`  | System-wide override    | **Yes**                   |
 
-systemd-resolved has no per-connection concept, so all three scopes behave
-identically there. `dnser` says so explicitly when it upgrades your scope rather
+systemd-resolved has no NetworkManager-style connection profiles — DNS is configured per-link or globally — so all three scopes behave identically there. `dnser` says so explicitly when it upgrades your scope rather
 than reporting something that didn't happen.
 
 ### Flags for `set`
@@ -158,12 +152,10 @@ a truncated DNS config behind. Every `set` and `unset` snapshots the previous
 state first, and `dnser status` scans for other drop-ins that could influence
 resolution independently of dnser.
 
-Because systemd-resolved's DoT is fail-closed, `--dot` first opens a quick TCP
-connection to the resolver's port 853: if a local firewall or the ISP blocks it,
-dnser warns before applying rather than leaving you unable to resolve anything.
+Because systemd-resolved's DoT is fail-closed, `--dot` first opens a quick TCP connection to port 853 as a reachability check: if a local firewall or the ISP blocks it, dnser warns before applying
 
 `dnser check` sends raw DNS queries over UDP/53: one for a well-known cached
-name, then randomized subdomains to force authoritative lookups. Sockets are
+name, then randomized subdomains to force cache misses. Sockets are
 connected before sending so replies from other hosts can't skew the numbers.
 Providers that only answer over DoT (Mullvad) are skipped rather than reported
 as broken.
