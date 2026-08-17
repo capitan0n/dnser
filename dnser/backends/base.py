@@ -52,6 +52,7 @@ class ProtocolSettings:
     no_llmnr: bool = False  # disable Link-Local Multicast Name Resolution
     no_mdns: bool = False  # disable Multicast DNS (.local resolution)
     dnssec: bool = False  # require DNSSEC validation (resolved only)
+    no_cache: bool = False  # disable the local DNS cache (resolved only)
 
 
 @dataclass
@@ -154,9 +155,15 @@ class Backend(ABC):
         scope: Scope,
         interface: str | None = None,
         protocols: ProtocolSettings | None = None,
+        fallback: list[str] | None = None,
         dry_run: bool = False,
     ) -> tuple[Scope, list[str]]:
         """Apply the given DNS servers according to scope.
+
+        `fallback`, when given, is a secondary server list consulted only
+        when every primary server fails. systemd-resolved has a native
+        FallbackDNS= for this; NetworkManager has no separate notion, so it
+        appends them after the primaries in the same ordered list.
 
         Returns (effective_scope, actions) where `actions` is a
         human-readable list of everything that was done — or, when

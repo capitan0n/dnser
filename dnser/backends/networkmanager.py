@@ -201,21 +201,30 @@ class NetworkManagerBackend(Backend):
         scope: Scope,
         interface: str | None = None,
         protocols: ProtocolSettings | None = None,
+        fallback: list[str] | None = None,
         dry_run: bool = False,
     ) -> tuple[Scope, list[str]]:
-        """Apply DNS according to scope. See the base class for semantics."""
+        """Apply DNS according to scope. See the base class for semantics.
+
+        NetworkManager has no separate FallbackDNS concept: it hands the
+        resolver an ordered server list and later entries are already tried
+        only when earlier ones fail. So fallback servers are appended after
+        the primaries, preserving primary-first order within each family.
+        """
         if not servers:
             raise BackendError("set_dns called with empty server list")
 
         settings = protocols or ProtocolSettings()
-        self._validate_supported(servers, settings)
+        # Fallback IPs go through the same capability gate as primaries.
+        combined = servers + list(fallback or [])
+        self._validate_supported(combined, settings)
 
         conf_content: str | None = None
         commands: list[list[str]] = []
         reactivate: _Connection | None = None
 
         if scope is Scope.GLOBAL:
-            conf_content = self._global_conf_content(servers)
+            conf_content = self._global_conf_content(combined)
             # NM has no global LLMNR/mDNS switch, so --global applies those
             # per connection as a best-effort equivalent.
             if settings.no_llmnr or settings.no_mdns:
@@ -228,7 +237,7 @@ class NetworkManagerBackend(Backend):
             conns = self._connections()
             if not conns:
                 raise BackendError("No saved connection profiles to modify.")
-            commands = [self._modify_args(c, servers, settings) for c in conns]
+            commands = [self._modify_args(c, combined, settings) for c in conns]
             reactivate = self._active_connection()
 
         elif scope is Scope.CURRENT:
@@ -243,7 +252,7 @@ class NetworkManagerBackend(Backend):
                     f"No active connection found on {where}.\n"
                     "  Use --all or --global, or connect to a network first."
                 )
-            commands = [self._modify_args(conn, servers, settings)]
+            commands = [self._modify_args(conn, combined, settings)]
             reactivate = conn
 
         else:  # pragma: no cover - Scope is exhaustive
@@ -356,6 +365,12 @@ class NetworkManagerBackend(Backend):
         if settings.dnssec:
             raise BackendError(
                 "NetworkManager cannot apply --dnssec — it has no resolver.\n"
+                "  Enable systemd-resolved, point NetworkManager at it\n"
+                "  (dns=systemd-resolved in NetworkManager.conf), then re-run."
+            )
+        if settings.no_cache:
+            raise BackendError(
+                "NetworkManager cannot apply --no-cache — it has no resolver.\n"
                 "  Enable systemd-resolved, point NetworkManager at it\n"
                 "  (dns=systemd-resolved in NetworkManager.conf), then re-run."
             )

@@ -29,10 +29,14 @@ change is explicit, inspectable with `--dry-run`, and reversible.
   (`resolvectl` + drop-ins), auto-detected
 - **Persistent global scope** — survives network changes, not just the current
   connection
-- **DNS-over-TLS**, fail-closed and certificate-verified (systemd-resolved)
+- **DNS-over-TLS**, fail-closed and certificate-verified (systemd-resolved),
+  with a pre-flight check that port 853 is actually reachable before applying
+- **Fallback DNS** — a secondary resolver consulted only if the primary fails,
+  set explicitly so resolved never silently falls back to its built-in servers
 - **Built-in benchmarking** — `dnser check` measures cached *and* uncached
   latency for every provider, using only the Python standard library
-- **Protocol hardening** — disable LLMNR and mDNS, require DNSSEC
+- **Protocol hardening** — disable LLMNR and mDNS, require DNSSEC, disable the
+  local resolver cache
 - **Snapshot before every change** — `dnser restore` reverts cleanly, and
   `dnser unset` removes dnser entirely even without a backup
 - **`--dry-run`** — see the exact file contents and commands before anything runs
@@ -79,6 +83,7 @@ dnser backends               # which backends are usable on this system
 
 sudo dnser set quad9         # switch to Quad9
 sudo dnser set quad9 --dot   # ...over DNS-over-TLS
+sudo dnser set quad9 --fallback cloudflare   # ...with a backup resolver
 dnser set quad9 --dry-run    # show what would happen, change nothing
 
 sudo dnser unset             # remove dnser's config, back to system defaults
@@ -105,15 +110,39 @@ than reporting something that didn't happen.
 |--------------|----------------------------------------------|----------------|
 | `--dot`      | DNS-over-TLS, fail-closed, cert-verified     | resolved only  |
 | `--dnssec`   | Require DNSSEC validation                    | resolved only  |
+| `--no-cache` | Disable the local resolver cache             | resolved only  |
 | `--no-llmnr` | Disable Link-Local Multicast Name Resolution | both           |
 | `--no-mdns`  | Disable Multicast DNS (`.local`)             | both           |
 | `--no-ipv6`  | Skip the provider's IPv6 servers             | both           |
+| `--fallback` | Secondary resolver, used only if primary fails | both         |
 | `--iface IF` | Target a specific interface (default scope)  | NetworkManager |
 | `--dry-run`  | Print the plan and exit                      | both           |
 
 Flags are individual on purpose — there is no `--harden` mega-flag. You should
 know exactly what you changed. Resolved-only flags fail loudly on
 NetworkManager instead of silently doing less than you asked.
+
+### Fallback DNS
+
+`--fallback` takes a comma-separated list of provider keys and/or raw IPs, used
+only when every primary server fails:
+
+```bash
+sudo dnser set quad9 --fallback cloudflare
+sudo dnser set quad9 --fallback 9.9.9.10,1.1.1.1
+sudo dnser set mullvad --dot --fallback quad9   # fallback is DoT too
+```
+
+- On **systemd-resolved** this writes a native `FallbackDNS=` line. dnser always
+  sets it explicitly, so resolved never silently falls back to its compiled-in
+  servers (Google/Cloudflare) — a surprising leak otherwise.
+- On **NetworkManager**, which has no separate fallback notion, the servers are
+  appended after the primaries in the same ordered list.
+- Under `--dot`, a fallback given as a provider key stays certificate-verified;
+  a bare IP is refused, since it can't be verified. Mixing a DoT primary with a
+  plaintext fallback prints a leak warning.
+- A fallback that shares servers with the primary is refused — it would never be
+  consulted, so it's almost certainly a mistake.
 
 ## How it works
 
@@ -128,6 +157,10 @@ Files under `/etc` are written atomically, so an interrupted run can never leave
 a truncated DNS config behind. Every `set` and `unset` snapshots the previous
 state first, and `dnser status` scans for other drop-ins that could influence
 resolution independently of dnser.
+
+Because systemd-resolved's DoT is fail-closed, `--dot` first opens a quick TCP
+connection to the resolver's port 853: if a local firewall or the ISP blocks it,
+dnser warns before applying rather than leaving you unable to resolve anything.
 
 `dnser check` sends raw DNS queries over UDP/53: one for a well-known cached
 name, then randomized subdomains to force authoritative lookups. Sockets are

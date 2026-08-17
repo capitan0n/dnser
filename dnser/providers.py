@@ -200,6 +200,67 @@ def identify_provider(
     return None
 
 
+def resolve_servers(
+    spec: str,
+    providers: dict[str, Provider],
+    *,
+    dot: bool,
+    include_ipv6: bool,
+) -> list[str]:
+    """Resolve a comma-separated spec of provider keys and/or raw IPs.
+
+    Used by --fallback: each comma-separated token is either a known
+    provider key (expanded to its server list) or a literal IP address.
+    Anything else raises ProviderError. When `dot` is set, provider keys
+    expand to 'IP#hostname' form and a bare IP is rejected — a fallback
+    without certificate verification would silently defeat a DoT primary.
+
+    A provider flagged `requires_dot` is rejected unless `dot` is set,
+    matching the gate `dnser set` already applies to the primary.
+    """
+    servers: list[str] = []
+    for raw in spec.split(","):
+        token = raw.strip()
+        if not token:
+            continue
+
+        provider = providers.get(token)
+        if provider is not None:
+            if dot:
+                if not provider.dot_hostname:
+                    raise ProviderError(
+                        f"Fallback provider '{token}' has no DoT hostname configured."
+                    )
+                servers.extend(provider.all_servers_dot(include_ipv6=include_ipv6))
+            else:
+                if provider.requires_dot:
+                    raise ProviderError(
+                        f"Fallback provider '{token}' only answers over DoT; "
+                        "re-run the whole command with --dot."
+                    )
+                servers.extend(provider.all_servers(include_ipv6=include_ipv6))
+            continue
+
+        # Not a known key — try to parse it as a literal IP.
+        try:
+            parsed = ipaddress.ip_address(token)
+        except ValueError as exc:
+            raise ProviderError(
+                f"Fallback '{token}' is neither a known provider key nor a valid IP."
+            ) from exc
+
+        if dot:
+            raise ProviderError(
+                f"Fallback '{token}' is a bare IP, which cannot be certificate-verified "
+                "under --dot. Use a provider key with a DoT hostname instead."
+            )
+        if parsed.version == 6 and not include_ipv6:
+            continue
+        servers.append(token)
+
+    return servers
+
+
 def get_config_path() -> Path:
     """Return the path of the active providers config file, for display."""
     return _find_config_file()

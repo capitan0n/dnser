@@ -209,6 +209,38 @@ def validate_response(response: bytes, packet: bytes, question: bytes) -> str | 
     return None
 
 
+_DOT_PORT = 853
+_DOT_TIMEOUT_S = 2.0
+
+
+def probe_dot(target_ip: str, timeout: float = _DOT_TIMEOUT_S) -> tuple[bool, str | None]:
+    """Return (reachable, error) for a TCP connect to <target_ip>:853.
+
+    This is a reachability check, not a TLS handshake: if the three-way
+    handshake to port 853 completes, DoT is not being blocked by a local
+    firewall or the ISP, which is the only thing we need to know before
+    handing systemd-resolved a fail-closed DoT config. A blocked port
+    otherwise surfaces as total resolution failure with no obvious cause.
+
+    Never raises — a False with a short reason is always returned instead.
+    """
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    except OSError as exc:
+        return False, f"socket error: {exc}"
+
+    sock.settimeout(timeout)
+    try:
+        sock.connect((target_ip, _DOT_PORT))
+    except TimeoutError:
+        return False, "timeout"
+    except OSError as exc:
+        return False, exc.strerror or str(exc)
+    finally:
+        sock.close()
+    return True, None
+
+
 def _random_label() -> str:
     """Return a 12-char random lowercase-alphanumeric DNS label.
 

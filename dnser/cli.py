@@ -22,7 +22,13 @@ from dnser.backends.base import BackendError, ProtocolSettings, Scope, sudo_hint
 from dnser.backends.detect import active_backend, all_backends
 from dnser.backup import BackupError
 from dnser.conflicts import scan_conflicts
-from dnser.providers import ProviderError, get_config_path, load_providers
+from dnser.providers import (
+    ProviderError,
+    get_config_path,
+    identify_provider,
+    load_providers,
+    resolve_servers,
+)
 
 console = Console()
 err_console = Console(stderr=True, style="bold red")
@@ -138,6 +144,36 @@ def _require_root() -> bool:
     return False
 
 
+def _confirm_dot_reachable(servers: list[str]) -> bool:
+    """Probe TCP/853 before applying a fail-closed DoT config.
+
+    resolved's DNSOverTLS=yes never falls back to plaintext, so if port
+    853 is blocked the machine simply stops resolving with no obvious
+    cause. We connect to the first server up front: on success we stay
+    silent, on failure we explain and ask before continuing. Returns True
+    to proceed, False to abort. A blocked probe is only a warning, not a
+    hard stop — the user may know the block is transient or path-specific.
+    """
+    target = servers[0].split("#", 1)[0]
+    reachable, error = check.probe_dot(target)
+    if reachable:
+        return True
+
+    console.print(
+        f"[yellow]⚠ cannot reach {escape(target)}:853 for DoT ({escape(error or 'unknown')}).[/yellow]"
+    )
+    console.print("[dim]  likely a local firewall or ISP/router blocking TCP/853.[/dim]")
+    console.print(
+        "[dim]  resolved's DoT is fail-closed: if 853 is blocked, resolution will stop.[/dim]"
+    )
+    try:
+        answer = input("apply anyway? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        console.print()
+        return False
+    return answer in ("y", "yes")
+
+
 def _print_plan(actions: list[str]) -> None:
     """Print a dry-run plan without touching anything."""
     console.print("[bold yellow]dry run[/bold yellow] — nothing was changed\n")
@@ -171,11 +207,27 @@ def cmd_status(_args: argparse.Namespace) -> int:
     if not state.per_interface:
         console.print("[yellow]No active interfaces with DNS configuration.[/yellow]")
     else:
+        # Load providers once so each row can be tagged with a friendly
+        # name when its servers match a known preset. Failure is non-fatal:
+        # the table still renders with bare IPs.
+        try:
+            known = load_providers()
+        except ProviderError:
+            known = {}
+
         table = Table(show_header=True, header_style="bold cyan")
         table.add_column("Interface")
         table.add_column("DNS Servers")
         for iface, servers in state.per_interface.items():
-            cell = escape(", ".join(servers)) if servers else "[dim](none / DHCP)[/dim]"
+            if servers:
+                cell = escape(", ".join(servers))
+                key = identify_provider(servers, known)
+                if key is not None:
+                    cell += f" [dim]({escape(known[key].name)})[/dim]"
+            elif iface == "(fallback)":
+                cell = "[dim](none)[/dim]"
+            else:
+                cell = "[dim](none / DHCP)[/dim]"
             table.add_row(escape(iface), cell)
         console.print(table)
 
@@ -358,6 +410,44 @@ def cmd_set(args: argparse.Namespace) -> int:
         _fail(f"Provider '{provider.key}' has no servers left after filtering.")
         return 1
 
+    # Resolve --fallback the same way and through the same DoT gate as the
+    # primary. Rejections happen here, before any snapshot is taken.
+    fallback: list[str] = []
+    if args.fallback:
+        try:
+            fallback = resolve_servers(
+                args.fallback, providers, dot=args.dot, include_ipv6=not args.no_ipv6
+            )
+        except ProviderError as exc:
+            _fail(str(exc))
+            console.print("[dim]run `dnser list` to see available providers.[/dim]")
+            return 1
+        if not fallback:
+            _fail(f"--fallback '{args.fallback}' resolved to no servers.")
+            return 1
+        # Primary and fallback sharing servers is a no-op that misleads:
+        # resolved would never consult a fallback identical to the primary.
+        primary_ips = {s.split("#", 1)[0] for s in servers}
+        fallback_ips = {s.split("#", 1)[0] for s in fallback}
+        overlap = primary_ips & fallback_ips
+        if overlap:
+            _fail(
+                "--fallback shares servers with the primary "
+                f"({', '.join(sorted(overlap))}); a fallback must be a "
+                "different resolver to be useful."
+            )
+            return 1
+        # A DoT primary with plaintext fallback leaks on failover. Under
+        # --dot, resolve_servers already refuses bare IPs, so this only
+        # warns in the plain-DNS case for symmetry / user awareness.
+        primary_dot = any("#" in s for s in servers)
+        fallback_plain = any("#" not in s for s in fallback)
+        if primary_dot and fallback_plain:
+            console.print(
+                "[yellow]⚠ primary uses DoT but fallback is plaintext — "
+                "queries will leak unencrypted if the primary fails.[/yellow]"
+            )
+
     if args.global_:
         scope = Scope.GLOBAL
     elif args.all:
@@ -373,6 +463,7 @@ def cmd_set(args: argparse.Namespace) -> int:
         no_llmnr=args.no_llmnr,
         no_mdns=args.no_mdns,
         dnssec=args.dnssec,
+        no_cache=args.no_cache,
     )
 
     backend = active_backend()
@@ -384,7 +475,7 @@ def cmd_set(args: argparse.Namespace) -> int:
         try:
             _, actions = backend.set_dns(
                 servers, scope=scope, interface=args.iface,
-                protocols=protocols, dry_run=True,
+                protocols=protocols, fallback=fallback, dry_run=True,
             )
         except BackendError as exc:
             _fail(str(exc))
@@ -393,6 +484,13 @@ def cmd_set(args: argparse.Namespace) -> int:
         return 0
 
     if not _require_root():
+        return 1
+
+    # DoT reachability preflight. Runs after the root check but before the
+    # snapshot, so declining at the prompt burns no backup slot. Dry runs
+    # never reach here — they return above without touching the network.
+    if args.dot and not _confirm_dot_reachable(servers):
+        console.print("[dim]aborted; nothing was changed.[/dim]")
         return 1
 
     try:
@@ -410,7 +508,8 @@ def cmd_set(args: argparse.Namespace) -> int:
 
     try:
         effective_scope, _ = backend.set_dns(
-            servers, scope=scope, interface=args.iface, protocols=protocols
+            servers, scope=scope, interface=args.iface,
+            protocols=protocols, fallback=fallback,
         )
     except BackendError as exc:
         _fail(f"Failed to apply DNS: {exc}")
@@ -432,12 +531,16 @@ def cmd_set(args: argparse.Namespace) -> int:
             f"[dim]note: {escape(backend.name)} has no per-connection scope; "
             f"'{scope.value}' was applied as '{effective_scope.value}'.[/dim]"
         )
+    if fallback:
+        console.print(f"[dim]fallback: {escape(', '.join(fallback))}[/dim]")
 
     applied = []
     if args.dot:
         applied.append("DoT=on")
     if protocols.dnssec:
         applied.append("DNSSEC=on")
+    if protocols.no_cache:
+        applied.append("cache=off")
     if protocols.no_llmnr:
         applied.append("LLMNR=off")
     if protocols.no_mdns:
@@ -625,6 +728,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-ipv6", action="store_true", help="Skip IPv6 servers even if defined"
     )
     p_set.add_argument(
+        "--fallback",
+        metavar="SPEC",
+        help=(
+            "Secondary DNS used only if the primary fails. Comma-separated "
+            "provider keys and/or IPs, e.g. --fallback cloudflare or "
+            "--fallback 9.9.9.10,1.1.1.1"
+        ),
+    )
+    p_set.add_argument(
         "--dot",
         action="store_true",
         help="DNS-over-TLS, fail-closed, certificate-verified (systemd-resolved only)",
@@ -641,6 +753,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_set.add_argument(
         "--no-mdns", action="store_true", help="Disable Multicast DNS (.local resolution)"
+    )
+    p_set.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Disable the local DNS cache (systemd-resolved only)",
     )
     p_set.add_argument(
         "--dry-run",

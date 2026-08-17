@@ -111,9 +111,32 @@ class ResolvedBackend(Backend):
 
         if DROPIN_PATH.exists():
             state.notes.append(f"dnser drop-in active: {DROPIN_PATH}")
+            # Show a fallback row whenever dnser manages the config, even
+            # when empty, so the user can see at a glance that no fallback
+            # is set (vs. baseline, where the row is absent entirely).
+            state.per_interface["(fallback)"] = self._read_dropin_fallback()
 
         state.protocols = self._read_protocol_state()
         return state
+
+    def _read_dropin_fallback(self) -> list[str]:
+        """Return the FallbackDNS servers from our drop-in, verbatim.
+
+        Read straight from the file rather than `resolvectl status` so the
+        row reflects exactly what dnser wrote, and shows nothing when no
+        fallback was configured. The 'IP#hostname' form is kept intact:
+        it signals the fallback is DoT-verified too, mirroring the primary
+        row — stripping it would imply a plaintext fallback that leaks.
+        """
+        try:
+            content = DROPIN_PATH.read_text(encoding="utf-8")
+        except OSError:
+            return []
+        for raw in content.splitlines():
+            line = raw.strip()
+            if line.startswith("FallbackDNS="):
+                return line[len("FallbackDNS=") :].split()
+        return []
 
     # ------------------------------------------------------------------
     # describe_current_state
@@ -168,6 +191,7 @@ class ResolvedBackend(Backend):
         scope: Scope,
         interface: str | None = None,
         protocols: ProtocolSettings | None = None,
+        fallback: list[str] | None = None,
         dry_run: bool = False,
     ) -> tuple[Scope, list[str]]:
         """Write the drop-in and restart resolved. Always global in effect."""
@@ -175,7 +199,9 @@ class ResolvedBackend(Backend):
             raise BackendError("set_dns called with empty server list")
         del interface, scope  # resolved is inherently global
 
-        content = self._build_dropin(servers, protocols or ProtocolSettings())
+        content = self._build_dropin(
+            servers, protocols or ProtocolSettings(), fallback or []
+        )
         actions = [f"write {DROPIN_PATH}"]
         actions += [f"  | {line}" for line in content.splitlines()]
         actions.append("run: systemctl restart systemd-resolved")
@@ -243,13 +269,25 @@ class ResolvedBackend(Backend):
     # ==================================================================
     # Internal: drop-in construction
     # ==================================================================
-    def _build_dropin(self, servers: list[str], settings: ProtocolSettings) -> str:
+    def _build_dropin(
+        self,
+        servers: list[str],
+        settings: ProtocolSettings,
+        fallback: list[str] | None = None,
+    ) -> str:
         """Build the [Resolve] drop-in contents.
 
         DoT: servers carrying '#hostname' mean the caller asked for
         DNS-over-TLS, so we write DNSOverTLS=yes, which systemd treats as
         fail-closed (an unencrypted fallback is never attempted). Plain
         IPs get 'opportunistic'.
+
+        FallbackDNS: consulted by resolved only when every DNS= server
+        fails. We set it explicitly so it never silently falls back to the
+        systemd compiled-in list (Google/Cloudflare), which would be a
+        surprising privacy leak. When DNSOverTLS=yes, resolved encrypts
+        fallback queries too, so a fallback carrying '#hostname' stays
+        encrypted end to end.
 
         Protocol lines are written only when explicitly requested, so we
         never silently override resolved's defaults for unset flags.
@@ -264,8 +302,12 @@ class ResolvedBackend(Backend):
             "Domains=~.",
             f"DNSOverTLS={dot_value}",
         ]
+        if fallback:
+            lines.append(f"FallbackDNS={' '.join(fallback)}")
         if settings.dnssec:
             lines.append("DNSSEC=yes")
+        if settings.no_cache:
+            lines.append("Cache=no")
         if settings.no_llmnr:
             lines.append("LLMNR=no")
         if settings.no_mdns:
