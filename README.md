@@ -11,7 +11,7 @@ backup: 20260816T142201Z_baseline.json
 
 ## Why
 
-Most Linux DNS tools assume a single backend, or only touch the active connection, so every new Wi-Fi network silently resets you.`dnser` detects the real DNS layer, warns about conflicting configuration
+Most Linux DNS tools assume a single backend, or only touch the active connection, so every new Wi-Fi network silently resets you. `dnser` detects the real DNS layer, warns about conflicting configuration
 elsewhere on the system, and supports a **global override** that persists across
 networks.
 
@@ -47,10 +47,42 @@ change is explicit, inspectable with `--dry-run`, and reversible.
 
 ## Install
 
-### From PyPI
+### From PyPI (recommended)
 
 ```bash
 pipx install dnser
+```
+
+`pipx` keeps dnser in its own isolated environment and puts the `dnser` command
+on your PATH — the right choice for a system CLI, and the way to install it on
+externally-managed distros (Arch, Manjaro, Debian 12+, Fedora) where a bare
+`pip install` into the system Python is refused (PEP 668).
+
+No `pipx`? Install it first:
+
+```bash
+sudo pacman -S python-pipx      # Arch / Manjaro
+sudo apt install pipx           # Debian / Ubuntu
+sudo dnf install pipx           # Fedora
+```
+
+### With pip
+
+```bash
+pip install dnser               # inside a virtualenv
+```
+
+On an externally-managed system, either use a virtualenv:
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install dnser
+```
+
+or install for your user only:
+
+```bash
+pip install --user dnser
 ```
 
 ### From source
@@ -61,8 +93,10 @@ cd dnser
 pipx install --editable .        # or: pip install -e ".[dev]"
 ```
 
-`pipx` installs into your user PATH, but `sudo` uses root's PATH. To make
-`sudo dnser` work:
+### Making `sudo dnser` work
+
+`pipx` and `pip --user` install into *your* PATH, but `sudo` uses root's PATH,
+so `sudo dnser` may report *command not found*. Symlink it once:
 
 ```bash
 sudo ln -s "$(which dnser)" /usr/local/bin/dnser
@@ -152,7 +186,7 @@ a truncated DNS config behind. Every `set` and `unset` snapshots the previous
 state first, and `dnser status` scans for other drop-ins that could influence
 resolution independently of dnser.
 
-Because systemd-resolved's DoT is fail-closed, `--dot` first opens a quick TCP connection to port 853 as a reachability check: if a local firewall or the ISP blocks it, dnser warns before applying
+Because systemd-resolved's DoT is fail-closed, `--dot` first opens a quick TCP connection to port 853 as a reachability check: if a local firewall or the ISP blocks it, dnser warns before applying.
 
 `dnser check` sends raw DNS queries over UDP/53: one for a well-known cached
 name, then randomized subdomains to force cache misses. Sockets are
@@ -203,6 +237,13 @@ pip install -e ".[dev]"
 ruff check .
 pytest
 ```
+
+## Author
+
+**capitan0n** — [github.com/capitan0n](https://github.com/capitan0n)
+
+Issues and pull requests are welcome at
+[github.com/capitan0n/dnser/issues](https://github.com/capitan0n/dnser/issues).
 
 ## License
 
