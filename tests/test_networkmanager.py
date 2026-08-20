@@ -182,6 +182,12 @@ class TestSetDns:
                 ["9.9.9.9"], Scope.CURRENT, protocols=ProtocolSettings(dnssec=True)
             )
 
+    def test_rejects_no_cache(self):
+        with pytest.raises(BackendError, match="cannot apply --no-cache"):
+            NetworkManagerBackend().set_dns(
+                ["9.9.9.9"], Scope.CURRENT, protocols=ProtocolSettings(no_cache=True)
+            )
+
     def test_current_scope_modifies_the_active_connection_by_uuid(self, global_conf, sequencer):
         seq = sequencer([ACTIVE, "", ""])
         NetworkManagerBackend().set_dns(["9.9.9.9"], Scope.CURRENT)
@@ -207,6 +213,15 @@ class TestSetDns:
         assert modify[modify.index("ipv4.dns") + 1] == "1.1.1.1"
         assert modify[modify.index("ipv6.dns") + 1] == "2606:4700:4700::1111"
 
+    def test_fallback_servers_are_appended_after_primaries(self, global_conf, sequencer):
+        seq = sequencer([ACTIVE, "", ""])
+        NetworkManagerBackend().set_dns(
+            ["1.1.1.1"], Scope.CURRENT, fallback=["9.9.9.9"]
+        )
+        modify = seq.calls[1]
+        # NM has no separate fallback; primary then fallback in one v4 list.
+        assert modify[modify.index("ipv4.dns") + 1] == "1.1.1.1,9.9.9.9"
+
     def test_iface_selects_the_matching_connection(self, global_conf, sequencer):
         active = "u-home:Home:wlp2s0\nu-eth:Wired:enp3s0\n"
         seq = sequencer([active, "", ""])
@@ -220,6 +235,23 @@ class TestSetDns:
         content = global_conf.read_text()
         assert "[global-dns-domain-*]" in content
         assert "servers=1.1.1.1,1.0.0.1" in content
+        assert ["nmcli", "general", "reload"] in seq.calls
+
+    def test_global_scope_hardens_protocols_per_connection(self, global_conf, sequencer):
+        # GLOBAL has no NM-wide LLMNR/mDNS switch, so those are applied
+        # per connection as a best-effort equivalent.
+        seq = sequencer([CONNECTIONS, ACTIVE, "", "", ""])
+        NetworkManagerBackend().set_dns(
+            ["1.1.1.1"],
+            Scope.GLOBAL,
+            protocols=ProtocolSettings(no_llmnr=True, no_mdns=True),
+        )
+        modify = next(
+            c for c in seq.calls if c[:3] == ["nmcli", "connection", "modify"]
+        )
+        assert modify[3] == "u-home"
+        assert modify[modify.index("connection.llmnr") + 1] == "no"
+        assert modify[modify.index("connection.mdns") + 1] == "no"
         assert ["nmcli", "general", "reload"] in seq.calls
 
     def test_all_scope_touches_every_profile(self, global_conf, sequencer):
@@ -381,3 +413,28 @@ class TestDescribeCurrentState:
     def test_identifies_provider_from_the_active_connection(self, global_conf, sequencer):
         sequencer([ACTIVE, "ipv4.dns:1.1.1.1,1.0.0.1\n"])
         assert NetworkManagerBackend().describe_current_state() == "cloudflare"
+
+
+# ----------------------------------------------------------------------
+# _reactivate (best-effort)
+# ----------------------------------------------------------------------
+
+class TestReactivate:
+    def test_set_succeeds_even_if_bringing_the_connection_up_fails(
+        self, global_conf, monkeypatch
+    ):
+        """A profile that can't come up (out of range, cable out) must not
+        fail the command — the config was already written."""
+        outputs = iter([completed(stdout=ACTIVE)])
+
+        def fake_run(args, **kwargs):
+            if args[:3] == ["nmcli", "connection", "up"]:
+                return completed(returncode=1, stderr="not available")
+            if args[:3] == ["nmcli", "connection", "modify"]:
+                return completed()
+            return next(outputs)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        # Must not raise.
+        effective, _ = NetworkManagerBackend().set_dns(["1.1.1.1"], Scope.CURRENT)
+        assert effective is Scope.CURRENT
