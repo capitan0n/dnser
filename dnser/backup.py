@@ -1,10 +1,15 @@
 """Backup storage for DNS state snapshots.
 
 Snapshots are JSON files under $XDG_STATE_HOME/dnser/backups/ (default
-~/.local/state/dnser/backups/). Filenames lead with a UTC timestamp so a
-plain lexicographic sort is also a chronological sort:
+~/.local/state/dnser/backups/). Current filenames lead with a UTC
+timestamp:
 
     20260816T142201Z_quad9.json
+
+Ordering (for `restore`, `status`, and pruning) is by the UTC timestamp
+embedded in the name, extracted with a regex rather than assumed to sit at
+the front — earlier versions wrote the label first (quad9_2026...json), and
+those files still have to sort by real age alongside the current format.
 
 We keep the last MAX_BACKUPS and prune older ones automatically.
 
@@ -21,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 import pwd
+import re
 import stat
 import string
 from contextlib import suppress
@@ -31,6 +37,9 @@ from pathlib import Path
 from dnser.backends.base import BackupPayload
 
 MAX_BACKUPS = 10
+
+# UTC timestamp stamped into every backup filename, e.g. 20260816T142201Z.
+_TIMESTAMP_RE = re.compile(r"(\d{8}T\d{6}Z)")
 
 
 class BackupError(Exception):
@@ -183,16 +192,33 @@ def _sanitize_label(label: str) -> str:
     return "".join(cleaned).strip("-") or "snapshot"
 
 
-def list_backups() -> list[Path]:
-    """Return all backup paths, newest first.
+def _sort_key(path: Path) -> tuple[str, float, str]:
+    """Chronological sort key that tolerates the legacy label-first format.
 
-    Safe because filenames lead with a fixed-width UTC timestamp, so
-    lexicographic order equals chronological order.
+    Current files are '<timestamp>_<label>.json'; older ones were
+    '<label>_<timestamp>.json', which a plain lexicographic sort ranks by
+    label instead of age (quad9_... outsorts a newer 20260823T...). Pull the
+    embedded UTC timestamp out wherever it sits so both formats order by real
+    age. Files with no recognizable timestamp fall back to mtime and sort
+    before any timestamped file. The trailing name keeps the order total and
+    stable when two files share a key.
     """
+    match = _TIMESTAMP_RE.search(path.name)
+    if match:
+        return (match.group(1), 0.0, path.name)
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+    return ("", mtime, path.name)
+
+
+def list_backups() -> list[Path]:
+    """Return all backup paths, newest first, ordered by embedded timestamp."""
     directory = _state_dir()
     if not directory.is_dir():
         return []
-    return sorted(directory.glob("*.json"), reverse=True)
+    return sorted(directory.glob("*.json"), key=_sort_key, reverse=True)
 
 
 def load(path: Path) -> BackupPayload:
@@ -209,7 +235,7 @@ def load(path: Path) -> BackupPayload:
 
 def _prune(directory: Path) -> None:
     """Delete the oldest backups beyond MAX_BACKUPS."""
-    files = sorted(directory.glob("*.json"), reverse=True)
+    files = sorted(directory.glob("*.json"), key=_sort_key, reverse=True)
     for old in files[MAX_BACKUPS:]:
         with suppress(OSError):
             old.unlink()
