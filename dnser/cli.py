@@ -677,7 +677,7 @@ def cmd_restore(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="dnser",
-        description="Terminal-first DNS switcher for Linux.",
+        description="Simple DNS switcher for Linux.",
     )
     parser.add_argument("--version", action="version", version=f"dnser {__version__}")
 

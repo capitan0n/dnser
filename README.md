@@ -1,5 +1,13 @@
 # dnser
 
+```
+     _                     
+   __| |_ __  ___  ___ _ __ 
+  / _` | '_ \/ __|/ _ \ '__|
+ | (_| | | | \__ \  __/ |   
+  \__,_|_| |_|___/\___|_|   
+```
+
 **A simple tool to configure DNS on Linux**, detects whether NetworkManager or systemd-resolved controls your DNS, applies the change through its native mechanism, and undoes it with one command.
 
 ```console
