@@ -17,6 +17,9 @@ def test_list_backups_orders_by_embedded_timestamp(tmp_path, monkeypatch):
     monkeypatch.delenv("SUDO_UID", raising=False)
     monkeypatch.delenv("SUDO_GID", raising=False)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    # Root ignores XDG_STATE_HOME outside the user's home (see _state_dir);
+    # pretend to be unprivileged so the test also passes in root containers.
+    monkeypatch.setattr(backup.os, "geteuid", lambda: 1000)
 
     backups_dir = tmp_path / "dnser" / "backups"
     backups_dir.mkdir(parents=True)

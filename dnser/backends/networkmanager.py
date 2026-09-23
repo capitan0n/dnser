@@ -444,7 +444,7 @@ class NetworkManagerBackend(Backend):
             _, sep, value = line.partition(":")
             if not sep:
                 continue
-            value = value.strip()
+            value = _unescape(value.strip())
             if value:
                 servers.append(value)
         return servers
@@ -513,7 +513,9 @@ class NetworkManagerBackend(Backend):
             key, sep, value = line.partition(":")
             if not sep:
                 continue
-            result[key.strip()] = value.strip()
+            # Values are escaped too: an IPv6 server reads back as
+            # '2620\:fe\:\:fe', which nmcli would reject on restore.
+            result[key.strip()] = _unescape(value.strip())
         return result
 
     # ==================================================================
@@ -552,19 +554,19 @@ class NetworkManagerBackend(Backend):
     ) -> list[str]:
         """Build one nmcli call setting DNS + protocol fields on a profile.
 
-        ignore-auto-dns is set alongside each family we configure, so
-        DHCP-provided servers can't sneak back in. Values are
-        comma-separated to match what nmcli reads back, keeping set and
-        restore symmetric.
+        Both families are always written, with ignore-auto-dns=yes, even
+        when one has no servers (e.g. --no-ipv6): otherwise DHCP/RA-provided
+        servers, or those left over from an earlier `dnser set`, would keep
+        answering queries for that family. An empty value clears the list.
+        Values are comma-separated to match what nmcli reads back, keeping
+        set and restore symmetric.
         """
         v4 = [s for s in servers if ":" not in s]
         v6 = [s for s in servers if ":" in s]
 
         args = ["nmcli", "connection", "modify", conn.uuid]
-        if v4:
-            args += ["ipv4.dns", ",".join(v4), "ipv4.ignore-auto-dns", "yes"]
-        if v6:
-            args += ["ipv6.dns", ",".join(v6), "ipv6.ignore-auto-dns", "yes"]
+        args += ["ipv4.dns", ",".join(v4), "ipv4.ignore-auto-dns", "yes"]
+        args += ["ipv6.dns", ",".join(v6), "ipv6.ignore-auto-dns", "yes"]
         if settings.no_llmnr:
             args += ["connection.llmnr", "no"]
         if settings.no_mdns:

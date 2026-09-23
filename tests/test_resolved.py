@@ -100,9 +100,30 @@ class TestGetCurrent:
 
     def test_reports_dropin_note_when_file_exists(self, dropin, sequencer):
         dropin.write_text("[Resolve]\nDNS=9.9.9.9\n")
-        sequencer(["Global: 9.9.9.9\n", ""])
+        sequencer(["Global: 9.9.9.9\n", "", ""])
         state = ResolvedBackend().get_current()
         assert any("dnser drop-in active" in n for n in state.notes)
+
+    def test_warns_about_links_that_also_route_everything(self, dropin, sequencer):
+        dropin.write_text("[Resolve]\nDNS=9.9.9.9\nDomains=~.\n")
+        domains = (
+            "Global: ~.\n"
+            "Link 2 (enp3s0): corp.example\n"
+            "Link 3 (wlp2s0): ~.\n"
+            "Link 1 (lo):\n"
+        )
+        seq = sequencer(["Global: 9.9.9.9\n", domains, ""])
+        state = ResolvedBackend().get_current()
+        assert ["resolvectl", "domain"] in seq.calls
+        leaks = [n for n in state.notes if "routing domain '~.'" in n]
+        assert len(leaks) == 1
+        assert "wlp2s0" in leaks[0]
+
+    def test_no_leak_warning_without_dropin(self, dropin, sequencer):
+        seq = sequencer(["Global: 9.9.9.9\n", ""])
+        state = ResolvedBackend().get_current()
+        assert ["resolvectl", "domain"] not in seq.calls
+        assert not any("routing domain" in n for n in state.notes)
 
 
 # ----------------------------------------------------------------------

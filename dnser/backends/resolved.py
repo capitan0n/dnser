@@ -115,9 +115,42 @@ class ResolvedBackend(Backend):
             # when empty, so the user can see at a glance that no fallback
             # is set (vs. baseline, where the row is absent entirely).
             state.per_interface["(fallback)"] = self._read_dropin_fallback()
+            for iface in self._links_routing_all_domains():
+                state.notes.append(
+                    f"link {iface} also has routing domain '~.': resolved still "
+                    "sends queries to its own DNS servers, bypassing dnser's. "
+                    "Set that connection's ipv4/ipv6.dns-priority to a positive "
+                    "value or remove '~.' from it."
+                )
 
         state.protocols = self._read_protocol_state()
         return state
+
+    def _links_routing_all_domains(self) -> list[str]:
+        """Return links (other than lo) that carry the '~.' routing domain.
+
+        Our drop-in puts '~.' on the global scope, but resolved sends each
+        query to *every* scope whose routing domains match. A link that also
+        has '~.' (NetworkManager adds it, e.g. with a negative dns-priority)
+        keeps receiving all queries in parallel with the global servers,
+        which silently leaks lookups to the DHCP/ISP resolver.
+        """
+        try:
+            output = self._run(["resolvectl", "domain"])
+        except BackendError:
+            return []
+        links: list[str] = []
+        for raw in output.strip().splitlines():
+            label, sep, domains = raw.strip().partition(":")
+            if not sep or not label.lower().startswith("link"):
+                continue
+            if "(" in label and ")" in label:
+                iface = label[label.index("(") + 1 : label.index(")")]
+            else:
+                iface = label.strip()
+            if iface != "lo" and "~." in domains.split():
+                links.append(iface)
+        return links
 
     def _read_dropin_fallback(self) -> list[str]:
         """Return the FallbackDNS servers from our drop-in, verbatim.

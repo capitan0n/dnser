@@ -213,6 +213,15 @@ class TestSetDns:
         assert modify[modify.index("ipv4.dns") + 1] == "1.1.1.1"
         assert modify[modify.index("ipv6.dns") + 1] == "2606:4700:4700::1111"
 
+    def test_ipv4_only_still_pins_ipv6(self, global_conf, sequencer):
+        """--no-ipv6 must clear IPv6 DNS and block RA/DHCPv6 servers, not
+        leave the ISP's (or a previous provider's) IPv6 resolvers active."""
+        seq = sequencer([ACTIVE, "", ""])
+        NetworkManagerBackend().set_dns(["1.1.1.1"], Scope.CURRENT)
+        modify = seq.calls[1]
+        assert modify[modify.index("ipv6.dns") + 1] == ""
+        assert modify[modify.index("ipv6.ignore-auto-dns") + 1] == "yes"
+
     def test_fallback_servers_are_appended_after_primaries(self, global_conf, sequencer):
         seq = sequencer([ACTIVE, "", ""])
         NetworkManagerBackend().set_dns(
@@ -438,3 +447,38 @@ class TestReactivate:
         # Must not raise.
         effective, _ = NetworkManagerBackend().set_dns(["1.1.1.1"], Scope.CURRENT)
         assert effective is Scope.CURRENT
+
+
+# ----------------------------------------------------------------------
+# nmcli terse-mode escaping of values
+# ----------------------------------------------------------------------
+
+class TestEscapedValues:
+    ESCAPED_FIELDS = (
+        "ipv4.dns:9.9.9.9\n"
+        "ipv4.ignore-auto-dns:yes\n"
+        "ipv6.dns:2620\\:fe\\:\\:fe,2620\\:fe\\:\\:9\n"
+        "ipv6.ignore-auto-dns:yes\n"
+        "connection.llmnr:no\n"
+        "connection.mdns:no\n"
+    )
+
+    def test_snapshot_unescapes_ipv6_servers(self, global_conf, sequencer):
+        sequencer([CONNECTIONS, self.ESCAPED_FIELDS])
+        payload = NetworkManagerBackend().snapshot()
+        fields = payload.data["per_connection"]["u-home"]
+        assert fields["ipv6.dns"] == "2620:fe::fe,2620:fe::9"
+
+    def test_restore_passes_valid_ipv6_to_nmcli(self, global_conf, sequencer):
+        sequencer([CONNECTIONS, self.ESCAPED_FIELDS])
+        payload = NetworkManagerBackend().snapshot()
+
+        seq = sequencer([CONNECTIONS, "", "", ACTIVE, ""])
+        NetworkManagerBackend().restore_from(payload)
+        modify = seq.calls[1]
+        assert modify[modify.index("ipv6.dns") + 1] == "2620:fe::fe,2620:fe::9"
+
+    def test_device_dns_is_unescaped(self, sequencer):
+        sequencer(["IP4.DNS[1]:9.9.9.9\nIP6.DNS[1]:2620\\:fe\\:\\:fe\n"])
+        servers = NetworkManagerBackend()._dns_for_device("wlp2s0")
+        assert servers == ["9.9.9.9", "2620:fe::fe"]
