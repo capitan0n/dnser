@@ -161,9 +161,9 @@ class Backend(ABC):
         """Apply the given DNS servers according to scope.
 
         `fallback`, when given, is a secondary server list consulted only
-        when every primary server fails. systemd-resolved has a native
-        FallbackDNS= for this; NetworkManager has no separate notion, so it
-        appends them after the primaries in the same ordered list.
+        when every primary server fails. Neither backend has a failover-only
+        list (resolved's FallbackDNS= applies only when no DNS server is
+        configured at all), so both append them after the primaries.
 
         Returns (effective_scope, actions) where `actions` is a
         human-readable list of everything that was done — or, when

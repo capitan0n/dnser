@@ -224,8 +224,11 @@ def probe_dot(target_ip: str, timeout: float = _DOT_TIMEOUT_S) -> tuple[bool, st
 
     Never raises — a False with a short reason is always returned instead.
     """
+    # A provider may list only IPv6 servers; an AF_INET socket would then
+    # fail every probe with "address family not supported".
+    family = socket.AF_INET6 if ":" in target_ip else socket.AF_INET
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock = socket.socket(family, socket.SOCK_STREAM)
     except OSError as exc:
         return False, f"socket error: {exc}"
 

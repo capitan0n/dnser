@@ -6,6 +6,7 @@ pure functions — no socket is opened anywhere in this module.
 
 from __future__ import annotations
 
+import socket
 import struct
 
 import pytest
@@ -15,6 +16,7 @@ from dnser.check import (
     _check_one,
     _random_label,
     check_all,
+    probe_dot,
     validate_response,
 )
 from dnser.providers import Provider
@@ -140,3 +142,27 @@ class TestCheckAll:
     def test_results_follow_input_order(self, monkeypatch):
         providers = {k: _provider(k, requires_dot=True) for k in ("c", "a", "b")}
         assert [r.provider_key for r in check_all(providers)] == ["c", "a", "b"]
+
+
+class TestProbeDot:
+    def test_uses_ipv6_socket_for_ipv6_target(self, monkeypatch):
+        """An AF_INET socket cannot reach an IPv6 server at all."""
+        families = []
+
+        class FakeSocket:
+            def __init__(self, family, _type):
+                families.append(family)
+
+            def settimeout(self, _timeout):
+                pass
+
+            def connect(self, _addr):
+                pass
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(socket, "socket", FakeSocket)
+        assert probe_dot("2620:fe::fe") == (True, None)
+        assert probe_dot("9.9.9.9") == (True, None)
+        assert families == [socket.AF_INET6, socket.AF_INET]

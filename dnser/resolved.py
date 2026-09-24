@@ -189,6 +189,8 @@ class ResolvedBackend(Backend):
         for raw in content.splitlines():
             line = raw.strip()
             if line.startswith("DNS="):
+                if not line[len("DNS=") :].strip():
+                    continue  # the reset line that precedes our servers
                 provider_key = identify_provider(line[len("DNS=") :].split())
                 if provider_key:
                     return provider_key
@@ -315,12 +317,18 @@ class ResolvedBackend(Backend):
         fail-closed (an unencrypted fallback is never attempted). Plain
         IPs get 'opportunistic'.
 
-        FallbackDNS: consulted by resolved only when every DNS= server
-        fails. We set it explicitly so it never silently falls back to the
-        systemd compiled-in list (Google/Cloudflare), which would be a
-        surprising privacy leak. When DNSOverTLS=yes, resolved encrypts
-        fallback queries too, so a fallback carrying '#hostname' stays
-        encrypted end to end.
+        DNS=: resolved appends every DNS= line it reads, main resolved.conf
+        first, so a server set there would stay ahead of ours and keep
+        receiving queries. The empty 'DNS=' clears that list before ours.
+
+        Fallback: resolved's FallbackDNS= is used only when no DNS server is
+        configured at all, never when the DNS= servers fail, so on its own
+        it would never be consulted. The fallback servers therefore go on a
+        second DNS= line after the primaries, which resolved moves on to
+        when the primaries stop answering (the same ordering NetworkManager
+        gets). FallbackDNS= is still written so `dnser status` can show the
+        fallback. When DNSOverTLS=yes, resolved encrypts to every server,
+        so a fallback carrying '#hostname' stays encrypted end to end.
 
         Protocol lines are written only when explicitly requested, so we
         never silently override resolved's defaults for unset flags.
@@ -331,7 +339,12 @@ class ResolvedBackend(Backend):
             DNSER_HEADER,
             "# Remove with: dnser unset  (or: dnser restore)",
             "[Resolve]",
+            "DNS=",
             f"DNS={' '.join(servers)}",
+        ]
+        if fallback:
+            lines.append(f"DNS={' '.join(fallback)}")
+        lines += [
             "Domains=~.",
             f"DNSOverTLS={dot_value}",
         ]
@@ -394,6 +407,11 @@ def validate_dropin(content: str) -> None:
     Applied to anything read back from a backup file before it is written
     into /etc as root.
     """
+    # systemd's parser ends a line at NUL as well as at CR/LF, but
+    # str.splitlines() does not: 'DNS=x\0Key=y' would be checked as one
+    # line while resolved reads a second, unvalidated directive.
+    if "\0" in content:
+        raise BackendError("Refusing to restore content containing a NUL byte")
     for raw in content.splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):

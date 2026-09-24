@@ -323,7 +323,9 @@ class NetworkManagerBackend(Backend):
             )
 
         per_connection = payload.data.get("per_connection") or {}
-        if not isinstance(per_connection, dict):
+        if not isinstance(per_connection, dict) or not all(
+            isinstance(fields, dict) for fields in per_connection.values()
+        ):
             raise BackendError("Corrupt backup: per_connection is not an object")
 
         existing = {c.uuid: c for c in self._connections()}

@@ -25,6 +25,26 @@ _HOSTNAME_RE = re.compile(
     re.IGNORECASE,
 )
 
+# An IPv6 zone ('fe80::1%eth0') lands in the same root-owned files. Python's
+# ipaddress accepts any zone text except '%', newlines included, so the zone
+# is held to interface-name characters (IFNAMSIZ caps names at 15).
+_SCOPE_ID_RE = re.compile(r"[A-Za-z0-9_.-]{1,15}")
+
+
+def _parse_ip(value: object) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
+    """Parse a server address that will be written verbatim into /etc.
+
+    Raises ValueError for non-strings (ipaddress would take an int) and for
+    a zone that could carry whitespace or a newline into the config file.
+    """
+    if not isinstance(value, str):
+        raise ValueError(f"{value!r} is not a string")
+    parsed = ipaddress.ip_address(value)
+    scope_id = getattr(parsed, "scope_id", None)
+    if scope_id is not None and not _SCOPE_ID_RE.fullmatch(scope_id):
+        raise ValueError(f"{value!r} has an invalid IPv6 zone")
+    return parsed
+
 
 def _bundled_config() -> Path:
     """Return the path of the providers.json shipped inside the package.
@@ -142,7 +162,7 @@ def _validate_ips(provider_key: str, ips: list[str], expected_version: int) -> N
     """Raise ProviderError if any IP is malformed or of the wrong family."""
     for ip in ips:
         try:
-            parsed = ipaddress.ip_address(ip)
+            parsed = _parse_ip(ip)
         except ValueError as exc:
             raise ProviderError(
                 f"Provider '{provider_key}': '{ip}' is not a valid IP address ({exc})."
@@ -167,7 +187,7 @@ def _validate_dot_hostname(provider_key: str, value: object) -> str | None:
     """Return a validated DoT hostname, or None when unset."""
     if value is None:
         return None
-    if not isinstance(value, str) or not _HOSTNAME_RE.match(value):
+    if not isinstance(value, str) or not _HOSTNAME_RE.fullmatch(value):
         raise ProviderError(
             f"Provider '{provider_key}': dot_hostname {value!r} is not a valid hostname."
         )
@@ -243,7 +263,7 @@ def resolve_servers(
 
         # Not a known key — try to parse it as a literal IP.
         try:
-            parsed = ipaddress.ip_address(token)
+            parsed = _parse_ip(token)
         except ValueError as exc:
             raise ProviderError(
                 f"Fallback '{token}' is neither a known provider key nor a valid IP."

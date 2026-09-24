@@ -341,6 +341,16 @@ class TestRestore:
         with pytest.raises(BackendError, match="cannot restore"):
             NetworkManagerBackend().restore_from(payload)
 
+    def test_rejects_non_object_connection_fields(self, global_conf, sequencer):
+        seq = sequencer([])
+        payload = BackupPayload(
+            backend_name="networkmanager",
+            data={"per_connection": {"u-home": ["1.1.1.1"]}},
+        )
+        with pytest.raises(BackendError, match="Corrupt backup"):
+            NetworkManagerBackend().restore_from(payload)
+        assert seq.calls == []
+
     def test_restores_fields_in_a_single_call(self, global_conf, sequencer):
         seq = sequencer([CONNECTIONS, "", "", ACTIVE, ""])
         payload = BackupPayload(

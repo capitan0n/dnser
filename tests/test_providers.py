@@ -11,6 +11,7 @@ from dnser.providers import (
     ProviderError,
     identify_provider,
     load_providers,
+    resolve_servers,
 )
 
 
@@ -101,6 +102,7 @@ class TestValidation:
         "hostname",
         [
             "dns.quad9.net\nDNSSEC=no",  # newline injection into the drop-in
+            "dns.quad9.net\n",  # "$" also matches before a final newline
             "dns quad9 net",
             "-leading-hyphen.net",
             "",
@@ -133,6 +135,34 @@ class TestValidation:
         )
         providers = load_providers()
         assert providers["cf"].ipv4 == ["1.1.1.1"]
+
+    @pytest.mark.parametrize(
+        "ip",
+        [
+            "fe80::1%x\nDNSStubListenerExtra=0.0.0.0",  # newline via the zone
+            "fe80::1%eth0 1.2.3.4",
+            "fe80::1%eth0\n",
+        ],
+    )
+    def test_ipv6_zone_cannot_inject_into_the_config(self, user_config, ip):
+        """ipaddress accepts any zone text, newlines included."""
+        user_config({"x": {"name": "X", "ipv4": ["1.1.1.1"], "ipv6": [ip]}})
+        with pytest.raises(ProviderError, match="not a valid IP"):
+            load_providers()
+
+    def test_plain_ipv6_zone_is_still_accepted(self, user_config):
+        user_config({"x": {"name": "X", "ipv4": ["1.1.1.1"], "ipv6": ["fe80::1%eth0"]}})
+        assert load_providers()["x"].ipv6 == ["fe80::1%eth0"]
+
+    def test_non_string_ip_raises(self, user_config):
+        """ipaddress.ip_address(5) is 0.0.0.5; the int would crash later."""
+        user_config({"x": {"name": "X", "ipv4": [5]}})
+        with pytest.raises(ProviderError, match="not a valid IP"):
+            load_providers()
+
+    def test_fallback_ip_zone_cannot_inject(self):
+        with pytest.raises(ProviderError, match="neither a known provider"):
+            resolve_servers("fe80::1%a\nb=c", {}, dot=False, include_ipv6=True)
 
 
 # ----------------------------------------------------------------------

@@ -614,7 +614,7 @@ def cmd_restore(args: argparse.Namespace) -> int:
         for index, path in enumerate(backups):
             label, timestamp = _split_backup_name(path.stem)
             try:
-                backend_name = backup.load(path).backend_name
+                backend_name = escape(backup.load(path).backend_name)
             except BackupError:
                 backend_name = "[red]corrupt[/red]"
             table.add_row(str(index), escape(label), escape(timestamp), backend_name)

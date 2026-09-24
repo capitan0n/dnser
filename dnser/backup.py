@@ -225,9 +225,12 @@ def load(path: Path) -> BackupPayload:
     """Load a snapshot from disk. Raises BackupError on corrupt files."""
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
+        data = raw["data"]
+        if not isinstance(data, dict):
+            raise TypeError("'data' is not an object")
         return BackupPayload(
             backend_name=str(raw["backend_name"]),
-            data=raw["data"],
+            data=data,
         )
     except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
         raise BackupError(f"Corrupt backup {path.name}: {exc}") from exc

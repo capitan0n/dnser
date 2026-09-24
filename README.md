@@ -169,9 +169,10 @@ sudo dnser set quad9 --fallback 9.9.9.10,1.1.1.1
 sudo dnser set mullvad --dot --fallback quad9   # fallback is DoT too
 ```
 
-- On **systemd-resolved** this writes a native `FallbackDNS=` line. dnser always
-  sets it explicitly, so resolved never silently falls back to its compiled-in
-  servers (Google/Cloudflare) — a surprising leak otherwise.
+- On **systemd-resolved** the servers go on a `DNS=` line after the primaries,
+  which resolved moves on to when the primaries stop answering. Its native
+  `FallbackDNS=` is only used when no DNS server is configured at all, so it is
+  written too (for `dnser status`) but is not what provides the failover.
 - On **NetworkManager**, which has no separate fallback notion, the servers are
   appended after the primaries in the same ordered list.
 - Under `--dot`, a fallback given as a provider key stays certificate-verified;

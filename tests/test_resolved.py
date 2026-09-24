@@ -186,6 +186,11 @@ class TestValidateDropin:
         with pytest.raises(BackendError, match="Refusing to restore"):
             validate_dropin(content)
 
+    def test_rejects_nul_separated_directive(self):
+        """systemd splits lines at NUL; splitlines() does not."""
+        with pytest.raises(BackendError, match="NUL"):
+            validate_dropin("[Resolve]\nDNS=9.9.9.9\x00DNSStubListenerExtra=0.0.0.0\n")
+
 
 # ----------------------------------------------------------------------
 # set_dns
@@ -222,6 +227,22 @@ class TestSetDns:
     def test_rejects_empty_server_list(self):
         with pytest.raises(BackendError, match="empty server list"):
             ResolvedBackend().set_dns([], Scope.GLOBAL)
+
+    def test_clears_dns_servers_from_earlier_config_first(self, dropin, any_run):
+        """DNS= appends across files; resolved.conf's list would come first."""
+        ResolvedBackend().set_dns(["1.1.1.1"], Scope.GLOBAL)
+        lines = dropin.read_text().splitlines()
+        assert lines.index("DNS=") < lines.index("DNS=1.1.1.1")
+
+    def test_fallback_is_on_a_dns_line_after_the_primaries(self, dropin, any_run):
+        """FallbackDNS= alone is never used while DNS= is non-empty."""
+        ResolvedBackend().set_dns(["1.1.1.1"], Scope.GLOBAL, fallback=["9.9.9.9"])
+        lines = dropin.read_text().splitlines()
+        assert lines.index("DNS=1.1.1.1") < lines.index("DNS=9.9.9.9")
+        assert "FallbackDNS=9.9.9.9" in lines
+        validate_dropin(dropin.read_text())
+        assert ResolvedBackend().describe_current_state() == "cloudflare"
+        assert ResolvedBackend()._read_dropin_fallback() == ["9.9.9.9"]
 
     def test_is_idempotent(self, dropin, any_run):
         ResolvedBackend().set_dns(["1.1.1.1"], Scope.GLOBAL)

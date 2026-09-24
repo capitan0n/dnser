@@ -122,6 +122,14 @@ class TestLoad:
         with pytest.raises(backup.BackupError, match="Corrupt backup"):
             backup.load(bad)
 
+    def test_non_object_data_raises_backup_error(self, backup_dir):
+        """restore_from calls data.get(); a list would crash with a traceback."""
+        backup_dir.mkdir(parents=True)
+        bad = backup_dir / "20260816T120000Z_broken.json"
+        bad.write_text(json.dumps({"backend_name": "resolved", "data": []}))
+        with pytest.raises(backup.BackupError, match="Corrupt backup"):
+            backup.load(bad)
+
 
 # ----------------------------------------------------------------------
 # Pruning
@@ -167,3 +175,15 @@ class TestStateDir:
         monkeypatch.setattr(backup, "_real_user_home", lambda: home)
 
         assert backup._state_dir() == home / ".local" / "state" / "dnser" / "backups"
+
+
+def test_restore_list_escapes_backend_name(backup_dir, capsys):
+    """backend_name comes from a user-writable file; '[/red]' crashed rich."""
+    from dnser import cli
+
+    backup_dir.mkdir(parents=True)
+    (backup_dir / "20260816T120000Z_x.json").write_text(
+        json.dumps({"backend_name": "[/red]", "data": {}})
+    )
+    assert cli.main(["restore", "--list"]) == 0
+    assert "[/red]" in capsys.readouterr().out
