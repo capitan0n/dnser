@@ -32,9 +32,8 @@ classifiers = [
     "Topic :: Utilities",
 ]
 
-dependencies = [
-    "rich>=13.0",  # tables and colour for terminal output
-]
+# None: dnser uses only the Python standard library (output: dnser/output.py).
+dependencies = []
 
 [project.optional-dependencies]
 dev = [

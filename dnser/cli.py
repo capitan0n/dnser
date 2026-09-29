@@ -13,15 +13,12 @@ import argparse
 import os
 import sys
 
-from rich.console import Console
-from rich.markup import escape
-from rich.table import Table
-
 from dnser import __version__, backup, check
 from dnser.backends.base import BackendError, ProtocolSettings, Scope, sudo_hint
 from dnser.backends.detect import active_backend, all_backends
 from dnser.backup import BackupError
 from dnser.conflicts import scan_conflicts
+from dnser.output import Console, Table, escape, set_color
 from dnser.providers import (
     ProviderError,
     get_config_path,
@@ -37,9 +34,10 @@ err_console = Console(stderr=True, style="bold red")
 # ----------------------------------------------------------------------
 # Output helpers
 # ----------------------------------------------------------------------
-# Provider metadata and backend error text are untrusted as far as rich is
-# concerned: a description containing '[red]' would otherwise be parsed as
-# markup. Everything dynamic goes through escape().
+# Output is written in dnser.output's markup ('[green]ok[/green]').
+# Provider metadata and backend error text are untrusted as far as markup is
+# concerned: a description containing '[red]' would otherwise be parsed as a
+# tag. Everything dynamic goes through escape().
 
 
 def _fail(message: str) -> None:
@@ -283,14 +281,13 @@ def cmd_list(_args: argparse.Namespace) -> int:
     console.print(f"[dim]config: {escape(str(config_path))}[/dim]\n")
 
     # show_lines draws a rule between rows so long descriptions don't
-    # visually collide with the next entry; padding keeps text off the
-    # borders, which the (0, 0) default does not.
-    table = Table(show_header=True, header_style="bold cyan", show_lines=True, padding=(0, 1))
-    table.add_column("Key", no_wrap=True, style="bold")
-    table.add_column("Name", no_wrap=True)
-    table.add_column("IPv4", no_wrap=True)
-    table.add_column("Tags", min_width=14)
-    table.add_column("Description", overflow="fold", min_width=32)
+    # visually collide with the next entry.
+    table = Table(show_header=True, header_style="bold cyan", show_lines=True)
+    table.add_column("Key", style="bold")
+    table.add_column("Name")
+    table.add_column("IPv4")
+    table.add_column("Tags")
+    table.add_column("Description")
 
     # Group by family (the key before the first '-') with a separator, so
     # "Quad9 has three variants" is visible at a glance.
@@ -329,7 +326,7 @@ def cmd_check(_args: argparse.Namespace) -> int:
     table.add_column("Status")
     table.add_column("Cached", justify="right")
     table.add_column("Uncached", justify="right")
-    table.add_column("Notes", overflow="fold")
+    table.add_column("Notes")
 
     for result in results:
         # Three visual states: working, skipped (DoT-only, not a failure),
@@ -688,6 +685,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--version", action="version", version=f"dnser {__version__}")
 
+    no_color_help = "Disable colored output (also: NO_COLOR=1)"
+    parser.add_argument("--no-color", action="store_true", help=no_color_help)
+
     subparsers = parser.add_subparsers(dest="command", metavar="COMMAND")
 
     p_status = subparsers.add_parser("status", help="Show current DNS configuration")
@@ -790,12 +790,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_restore.set_defaults(func=cmd_restore)
 
+    # --no-color also works after the command. SUPPRESS keeps a subcommand
+    # from resetting the flag to False when it was given before the command.
+    for subparser in subparsers.choices.values():
+        subparser.add_argument(
+            "--no-color", action="store_true", default=argparse.SUPPRESS, help=no_color_help
+        )
+
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    # Set on every call, not only when the flag is given, so one main() call
+    # can't leak its choice into the next (tests call main() repeatedly).
+    set_color(False if args.no_color else None)
 
     if args.command is None:
         parser.print_help()

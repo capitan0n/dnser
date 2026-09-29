@@ -183,7 +183,7 @@ class TestStateDir:
 
 
 def test_restore_list_escapes_backend_name(backup_dir, capsys):
-    """backend_name comes from a user-writable file; '[/red]' crashed rich."""
+    """backend_name comes from a user-writable file; '[/red]' must print literally."""
     from dnser import cli
 
     backup_dir.mkdir(parents=True)

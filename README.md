@@ -46,11 +46,14 @@ change is explicit, inspectable with `--dry-run`, and reversible.
 - **Conflict detection** — warns about other drop-ins that may override your DNS
 - **15 provider presets** (Quad9, Mullvad, AdGuard, Cloudflare, OpenDNS, Google),
   fully overridable via JSON
+- **Zero dependencies** — pure Python standard library, nothing third-party
+  runs as root; colored output that switches itself off when piped and
+  honours `NO_COLOR`
 
 ## Requirements
 
 - Linux with **NetworkManager** or **systemd-resolved**
-- Python 3.10+
+- Python 3.10+ (standard library only — no third-party packages)
 - `root` for anything that changes system state
 
 ## Install
@@ -127,6 +130,18 @@ sudo dnser unset             # remove dnser's config, back to system defaults
 sudo dnser restore           # undo the last change
 dnser restore --list         # show all backups
 sudo dnser restore --index 2 # restore a specific backup
+```
+
+### Colors
+
+Output is colored in a terminal and plain when piped or redirected, so
+`dnser list | grep quad9` never sees escape codes. To turn color off
+everywhere, pass `--no-color` (before or after the command) or set
+[`NO_COLOR`](https://no-color.org):
+
+```bash
+dnser list --no-color
+NO_COLOR=1 dnser status
 ```
 
 ### Scopes
@@ -238,8 +253,8 @@ Backups live in `~/.local/state/dnser/backups/` (last 10 kept), honouring
 ## Contributing
 
 Issues and pull requests are welcome. Please keep changes minimal and in the
-spirit of the tool: one obvious behaviour per flag, no hidden magic, and no new
-runtime dependencies without a strong reason.
+spirit of the tool: one obvious behaviour per flag, no hidden magic, and no
+runtime dependencies — dnser uses only the Python standard library.
 
 ```bash
 pip install -e ".[dev]"
