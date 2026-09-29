@@ -34,6 +34,7 @@ def _reply(packet: bytes, question: bytes, rcode: int = 0, qr: bool = True) -> b
 # Query construction
 # ----------------------------------------------------------------------
 
+
 class TestBuildQuery:
     def test_header_and_question_shape(self):
         packet, question = _build_a_query("example.com")
@@ -66,6 +67,7 @@ class TestRandomLabel:
 # ----------------------------------------------------------------------
 # Response validation
 # ----------------------------------------------------------------------
+
 
 class TestValidateResponse:
     def test_accepts_noerror(self):
@@ -114,6 +116,7 @@ class TestValidateResponse:
 # ----------------------------------------------------------------------
 # Provider dispatch
 # ----------------------------------------------------------------------
+
 
 def _provider(key: str, **kwargs) -> Provider:
     defaults = {"name": key.title(), "description": "", "ipv4": ["203.0.113.1"]}

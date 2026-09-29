@@ -1,5 +1,3 @@
-import os
-
 from dnser import backup
 
 
@@ -27,7 +25,7 @@ def test_list_backups_orders_by_embedded_timestamp(tmp_path, monkeypatch):
     # Mixed formats: current timestamp-first and legacy label-first.
     _touch(backups_dir, "20260823T104148Z_opendns.json")  # newest
     _touch(backups_dir, "20260823T104128Z_quad9.json")
-    _touch(backups_dir, "quad9_20260816T132353Z.json")     # legacy, older
+    _touch(backups_dir, "quad9_20260816T132353Z.json")  # legacy, older
     _touch(backups_dir, "cloudflare_20260815T232936Z.json")  # legacy, oldest
 
     ordered = [p.name for p in backup.list_backups()]
@@ -54,8 +52,8 @@ def test_prune_keeps_newest_across_mixed_formats(tmp_path, monkeypatch):
     backups_dir.mkdir(parents=True)
 
     _touch(backups_dir, "20260823T104148Z_opendns.json")  # newest, keep
-    _touch(backups_dir, "20260823T104128Z_quad9.json")     # keep
-    _touch(backups_dir, "quad9_20260816T132353Z.json")     # legacy, prune
+    _touch(backups_dir, "20260823T104128Z_quad9.json")  # keep
+    _touch(backups_dir, "quad9_20260816T132353Z.json")  # legacy, prune
 
     backup._prune(backups_dir)
 

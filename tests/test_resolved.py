@@ -23,6 +23,7 @@ def dropin(tmp_path, monkeypatch):
 # is_available
 # ----------------------------------------------------------------------
 
+
 class TestIsAvailable:
     def test_false_when_resolvectl_missing(self, monkeypatch):
         monkeypatch.setattr("shutil.which", lambda name: None)
@@ -106,12 +107,7 @@ class TestGetCurrent:
 
     def test_warns_about_links_that_also_route_everything(self, dropin, sequencer):
         dropin.write_text("[Resolve]\nDNS=9.9.9.9\nDomains=~.\n")
-        domains = (
-            "Global: ~.\n"
-            "Link 2 (enp3s0): corp.example\n"
-            "Link 3 (wlp2s0): ~.\n"
-            "Link 1 (lo):\n"
-        )
+        domains = "Global: ~.\nLink 2 (enp3s0): corp.example\nLink 3 (wlp2s0): ~.\nLink 1 (lo):\n"
         seq = sequencer(["Global: 9.9.9.9\n", domains, ""])
         state = ResolvedBackend().get_current()
         assert ["resolvectl", "domain"] in seq.calls
@@ -129,6 +125,7 @@ class TestGetCurrent:
 # ----------------------------------------------------------------------
 # snapshot / restore
 # ----------------------------------------------------------------------
+
 
 class TestSnapshotAndRestore:
     def test_snapshot_captures_existing_dropin(self, dropin):
@@ -196,6 +193,7 @@ class TestValidateDropin:
 # set_dns
 # ----------------------------------------------------------------------
 
+
 class TestSetDns:
     def test_writes_dropin_with_dot_when_hostname_present(self, dropin, any_run):
         ResolvedBackend().set_dns(
@@ -257,9 +255,7 @@ class TestSetDns:
 
     def test_dry_run_changes_nothing(self, dropin, sequencer):
         seq = sequencer([])
-        effective, actions = ResolvedBackend().set_dns(
-            ["1.1.1.1"], Scope.CURRENT, dry_run=True
-        )
+        effective, actions = ResolvedBackend().set_dns(["1.1.1.1"], Scope.CURRENT, dry_run=True)
         assert effective is Scope.GLOBAL
         assert not dropin.exists()
         assert seq.calls == []
@@ -270,6 +266,7 @@ class TestSetDns:
 # ----------------------------------------------------------------------
 # unset
 # ----------------------------------------------------------------------
+
 
 class TestUnset:
     def test_removes_the_dropin(self, dropin, any_run):
@@ -296,6 +293,7 @@ class TestUnset:
 # describe_current_state
 # ----------------------------------------------------------------------
 
+
 class TestDescribeCurrentState:
     def test_baseline_when_no_dropin(self, dropin):
         assert ResolvedBackend().describe_current_state() == "baseline"
@@ -306,8 +304,7 @@ class TestDescribeCurrentState:
 
     def test_identifies_known_provider(self, dropin):
         dropin.write_text(
-            "# Managed by dnser — do not edit by hand.\n"
-            "[Resolve]\nDNS=9.9.9.9 149.112.112.112\n"
+            "# Managed by dnser — do not edit by hand.\n[Resolve]\nDNS=9.9.9.9 149.112.112.112\n"
         )
         assert ResolvedBackend().describe_current_state() == "quad9"
 

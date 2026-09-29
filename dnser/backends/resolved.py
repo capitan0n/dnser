@@ -234,9 +234,7 @@ class ResolvedBackend(Backend):
             raise BackendError("set_dns called with empty server list")
         del interface, scope  # resolved is inherently global
 
-        content = self._build_dropin(
-            servers, protocols or ProtocolSettings(), fallback or []
-        )
+        content = self._build_dropin(servers, protocols or ProtocolSettings(), fallback or [])
         actions = [f"write {DROPIN_PATH}"]
         actions += [f"  | {line}" for line in content.splitlines()]
         actions.append("run: systemctl restart systemd-resolved")
@@ -296,9 +294,7 @@ class ResolvedBackend(Backend):
             raise BackendError(f"Failed to run {args[0]}: {exc}") from exc
         if result.returncode != 0:
             stderr = result.stderr.strip() or "no error message"
-            raise BackendError(
-                f"Command failed ({result.returncode}): {' '.join(args)}\n{stderr}"
-            )
+            raise BackendError(f"Command failed ({result.returncode}): {' '.join(args)}\n{stderr}")
         return result.stdout
 
     # ==================================================================

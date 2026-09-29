@@ -99,8 +99,7 @@ def _find_config_file() -> Path:
         if candidate.is_file():
             return candidate
     raise ProviderError(
-        "No providers config found. Looked in:\n"
-        f"  {_USER_CONFIG}\n  {_SYSTEM_CONFIG}\n  {bundled}"
+        f"No providers config found. Looked in:\n  {_USER_CONFIG}\n  {_SYSTEM_CONFIG}\n  {bundled}"
     )
 
 
@@ -125,9 +124,7 @@ def load_providers() -> dict[str, Provider]:
     providers: dict[str, Provider] = {}
     for key, data in raw.items():
         if not isinstance(data, dict):
-            raise ProviderError(
-                f"Provider '{key}': expected an object, got {type(data).__name__}"
-            )
+            raise ProviderError(f"Provider '{key}': expected an object, got {type(data).__name__}")
         try:
             ipv4 = list(data.get("ipv4", []))
             ipv6 = list(data.get("ipv6", []))
@@ -194,9 +191,7 @@ def _validate_dot_hostname(provider_key: str, value: object) -> str | None:
     return value
 
 
-def identify_provider(
-    ips: list[str], providers: dict[str, Provider] | None = None
-) -> str | None:
+def identify_provider(ips: list[str], providers: dict[str, Provider] | None = None) -> str | None:
     """Return the provider key whose IP list contains any of `ips`, else None.
 
     Strips DoT '#hostname' suffixes before comparing. Matching on any

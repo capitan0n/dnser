@@ -26,6 +26,7 @@ def _payload(name: str = "resolved") -> BackupPayload:
 # Filename shape
 # ----------------------------------------------------------------------
 
+
 class TestSaveFilenames:
     def test_filename_leads_with_timestamp_not_label(self, backup_dir):
         path = backup.save(_payload(), label="quad9")
@@ -74,6 +75,7 @@ class TestSanitizeLabel:
 # Ordering — regression for the label-first sorting bug
 # ----------------------------------------------------------------------
 
+
 class TestOrdering:
     def test_newest_first_regardless_of_label(self, backup_dir):
         """A later backup must win even when its label sorts earlier.
@@ -97,6 +99,7 @@ class TestOrdering:
 # ----------------------------------------------------------------------
 # Load
 # ----------------------------------------------------------------------
+
 
 class TestLoad:
     def test_round_trip(self, backup_dir):
@@ -135,6 +138,7 @@ class TestLoad:
 # Pruning
 # ----------------------------------------------------------------------
 
+
 def test_prune_keeps_only_the_newest(backup_dir, monkeypatch):
     monkeypatch.setattr(backup, "MAX_BACKUPS", 3)
     backup_dir.mkdir(parents=True)
@@ -155,6 +159,7 @@ def test_prune_keeps_only_the_newest(backup_dir, monkeypatch):
 # ----------------------------------------------------------------------
 # State directory hardening
 # ----------------------------------------------------------------------
+
 
 class TestStateDir:
     def test_xdg_state_home_is_honored_for_normal_users(self, tmp_path, monkeypatch):

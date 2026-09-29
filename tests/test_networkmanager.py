@@ -42,6 +42,7 @@ def global_conf(tmp_path, monkeypatch):
 # is_available
 # ----------------------------------------------------------------------
 
+
 class TestIsAvailable:
     def test_false_if_nmcli_missing(self, monkeypatch):
         monkeypatch.setattr("shutil.which", lambda name: None)
@@ -70,6 +71,7 @@ class TestIsAvailable:
 # Connection parsing
 # ----------------------------------------------------------------------
 
+
 class TestConnectionParsing:
     def test_uuid_and_name_are_split_correctly(self):
         conns = NetworkManagerBackend._parse_connections(CONNECTIONS, skip_types={"loopback"})
@@ -92,6 +94,7 @@ class TestConnectionParsing:
 # ----------------------------------------------------------------------
 # get_current
 # ----------------------------------------------------------------------
+
 
 class TestGetCurrent:
     def test_parses_single_connected_device(self, global_conf, sequencer):
@@ -142,6 +145,7 @@ class TestGetCurrent:
 # snapshot
 # ----------------------------------------------------------------------
 
+
 class TestSnapshot:
     def test_captures_per_connection_fields_keyed_by_uuid(self, global_conf, sequencer):
         sequencer([CONNECTIONS, FIELDS])
@@ -165,6 +169,7 @@ class TestSnapshot:
 # ----------------------------------------------------------------------
 # set_dns
 # ----------------------------------------------------------------------
+
 
 class TestSetDns:
     def test_rejects_empty_server_list(self):
@@ -206,9 +211,7 @@ class TestSetDns:
 
     def test_separates_ipv4_and_ipv6(self, global_conf, sequencer):
         seq = sequencer([ACTIVE, "", ""])
-        NetworkManagerBackend().set_dns(
-            ["1.1.1.1", "2606:4700:4700::1111"], Scope.CURRENT
-        )
+        NetworkManagerBackend().set_dns(["1.1.1.1", "2606:4700:4700::1111"], Scope.CURRENT)
         modify = seq.calls[1]
         assert modify[modify.index("ipv4.dns") + 1] == "1.1.1.1"
         assert modify[modify.index("ipv6.dns") + 1] == "2606:4700:4700::1111"
@@ -224,9 +227,7 @@ class TestSetDns:
 
     def test_fallback_servers_are_appended_after_primaries(self, global_conf, sequencer):
         seq = sequencer([ACTIVE, "", ""])
-        NetworkManagerBackend().set_dns(
-            ["1.1.1.1"], Scope.CURRENT, fallback=["9.9.9.9"]
-        )
+        NetworkManagerBackend().set_dns(["1.1.1.1"], Scope.CURRENT, fallback=["9.9.9.9"])
         modify = seq.calls[1]
         # NM has no separate fallback; primary then fallback in one v4 list.
         assert modify[modify.index("ipv4.dns") + 1] == "1.1.1.1,9.9.9.9"
@@ -255,9 +256,7 @@ class TestSetDns:
             Scope.GLOBAL,
             protocols=ProtocolSettings(no_llmnr=True, no_mdns=True),
         )
-        modify = next(
-            c for c in seq.calls if c[:3] == ["nmcli", "connection", "modify"]
-        )
+        modify = next(c for c in seq.calls if c[:3] == ["nmcli", "connection", "modify"])
         assert modify[3] == "u-home"
         assert modify[modify.index("connection.llmnr") + 1] == "no"
         assert modify[modify.index("connection.mdns") + 1] == "no"
@@ -278,9 +277,7 @@ class TestSetDns:
 
     def test_dry_run_only_reads(self, global_conf, sequencer):
         seq = sequencer([ACTIVE])
-        _, actions = NetworkManagerBackend().set_dns(
-            ["1.1.1.1"], Scope.CURRENT, dry_run=True
-        )
+        _, actions = NetworkManagerBackend().set_dns(["1.1.1.1"], Scope.CURRENT, dry_run=True)
         # One read to find the active connection, and nothing else.
         assert len(seq.calls) == 1
         assert not global_conf.exists()
@@ -305,6 +302,7 @@ class TestSetDns:
 # ----------------------------------------------------------------------
 # unset
 # ----------------------------------------------------------------------
+
 
 class TestUnset:
     def test_clears_managed_fields_and_removes_the_conf(self, global_conf, sequencer):
@@ -334,6 +332,7 @@ class TestUnset:
 # ----------------------------------------------------------------------
 # restore
 # ----------------------------------------------------------------------
+
 
 class TestRestore:
     def test_rejects_wrong_backend(self):
@@ -413,6 +412,7 @@ class TestValidateGlobalConf:
 # describe_current_state
 # ----------------------------------------------------------------------
 
+
 class TestDescribeCurrentState:
     def test_identifies_provider_from_the_global_conf(self, global_conf):
         global_conf.write_text(
@@ -438,10 +438,9 @@ class TestDescribeCurrentState:
 # _reactivate (best-effort)
 # ----------------------------------------------------------------------
 
+
 class TestReactivate:
-    def test_set_succeeds_even_if_bringing_the_connection_up_fails(
-        self, global_conf, monkeypatch
-    ):
+    def test_set_succeeds_even_if_bringing_the_connection_up_fails(self, global_conf, monkeypatch):
         """A profile that can't come up (out of range, cable out) must not
         fail the command — the config was already written."""
         outputs = iter([completed(stdout=ACTIVE)])
@@ -462,6 +461,7 @@ class TestReactivate:
 # ----------------------------------------------------------------------
 # nmcli terse-mode escaping of values
 # ----------------------------------------------------------------------
+
 
 class TestEscapedValues:
     ESCAPED_FIELDS = (

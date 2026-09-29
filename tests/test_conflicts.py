@@ -24,6 +24,7 @@ NM_KEYS = ("servers=", "ignore-auto-dns")
 # Line matching
 # ----------------------------------------------------------------------
 
+
 class TestLineMatching:
     @pytest.mark.parametrize(
         "line",
@@ -158,6 +159,7 @@ class TestNmClassification:
 # ----------------------------------------------------------------------
 # scan_conflicts end to end
 # ----------------------------------------------------------------------
+
 
 class TestScanConflicts:
     def test_reports_foreign_dropins_but_skips_our_own(self, tmp_path, monkeypatch):

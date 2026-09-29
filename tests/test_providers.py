@@ -31,6 +31,7 @@ def user_config(tmp_path, monkeypatch):
 # Bundled defaults
 # ----------------------------------------------------------------------
 
+
 class TestBundledDefaults:
     def test_loads_and_is_not_empty(self):
         providers = load_providers()
@@ -57,6 +58,7 @@ class TestBundledDefaults:
 # Server list assembly
 # ----------------------------------------------------------------------
 
+
 class TestServerLists:
     def test_ipv4_comes_first_and_ipv6_is_included(self):
         cloudflare = load_providers()["cloudflare"]
@@ -76,6 +78,7 @@ class TestServerLists:
 # ----------------------------------------------------------------------
 # Malformed input
 # ----------------------------------------------------------------------
+
 
 class TestValidation:
     def test_malformed_json_raises(self, user_config):
@@ -119,9 +122,7 @@ class TestValidation:
             load_providers()
 
     def test_good_dot_hostname_accepted(self, user_config):
-        user_config(
-            {"x": {"name": "X", "ipv4": ["1.1.1.1"], "dot_hostname": "dns.example.com"}}
-        )
+        user_config({"x": {"name": "X", "ipv4": ["1.1.1.1"], "dot_hostname": "dns.example.com"}})
         assert load_providers()["x"].dot_hostname == "dns.example.com"
 
     def test_empty_tag_raises(self, user_config):
@@ -168,6 +169,7 @@ class TestValidation:
 # ----------------------------------------------------------------------
 # identify_provider
 # ----------------------------------------------------------------------
+
 
 class TestIdentifyProvider:
     def test_matches_plain_ip(self):

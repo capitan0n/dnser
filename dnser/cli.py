@@ -41,6 +41,7 @@ err_console = Console(stderr=True, style="bold red")
 # concerned: a description containing '[red]' would otherwise be parsed as
 # markup. Everything dynamic goes through escape().
 
+
 def _fail(message: str) -> None:
     """Print an error message, escaping any markup it may contain."""
     err_console.print(escape(message))
@@ -159,9 +160,8 @@ def _confirm_dot_reachable(servers: list[str]) -> bool:
     if reachable:
         return True
 
-    console.print(
-        f"[yellow]⚠ cannot reach {escape(target)}:853 for DoT ({escape(error or 'unknown')}).[/yellow]"
-    )
+    reason = escape(error or "unknown")
+    console.print(f"[yellow]⚠ cannot reach {escape(target)}:853 for DoT ({reason}).[/yellow]")
     console.print("[dim]  likely a local firewall or ISP/router blocking TCP/853.[/dim]")
     console.print(
         "[dim]  resolved's DoT is fail-closed: if 853 is blocked, resolution will stop.[/dim]"
@@ -185,14 +185,13 @@ def _print_plan(actions: list[str]) -> None:
 # Command handlers
 # ----------------------------------------------------------------------
 
+
 def cmd_status(_args: argparse.Namespace) -> int:
     """Show which backend is active and the current DNS configuration."""
     backend = active_backend()
     if backend is None:
         err_console.print("No supported DNS backend detected on this system.")
-        console.print(
-            "[dim]dnser needs one of: NetworkManager (nmcli) or systemd-resolved.[/dim]"
-        )
+        console.print("[dim]dnser needs one of: NetworkManager (nmcli) or systemd-resolved.[/dim]")
         console.print("[dim]run `dnser backends` to see which are installed.[/dim]")
         return 1
 
@@ -474,8 +473,12 @@ def cmd_set(args: argparse.Namespace) -> int:
     if args.dry_run:
         try:
             _, actions = backend.set_dns(
-                servers, scope=scope, interface=args.iface,
-                protocols=protocols, fallback=fallback, dry_run=True,
+                servers,
+                scope=scope,
+                interface=args.iface,
+                protocols=protocols,
+                fallback=fallback,
+                dry_run=True,
             )
         except BackendError as exc:
             _fail(str(exc))
@@ -508,8 +511,11 @@ def cmd_set(args: argparse.Namespace) -> int:
 
     try:
         effective_scope, _ = backend.set_dns(
-            servers, scope=scope, interface=args.iface,
-            protocols=protocols, fallback=fallback,
+            servers,
+            scope=scope,
+            interface=args.iface,
+            protocols=protocols,
+            fallback=fallback,
         )
     except BackendError as exc:
         _fail(f"Failed to apply DNS: {exc}")
@@ -674,6 +680,7 @@ def cmd_restore(args: argparse.Namespace) -> int:
 # Argument parser
 # ----------------------------------------------------------------------
 
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="dnser",
@@ -686,17 +693,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_status = subparsers.add_parser("status", help="Show current DNS configuration")
     p_status.set_defaults(func=cmd_status)
 
-    p_backends = subparsers.add_parser(
-        "backends", help="List known DNS backends and availability"
-    )
+    p_backends = subparsers.add_parser("backends", help="List known DNS backends and availability")
     p_backends.set_defaults(func=cmd_backends)
 
     p_list = subparsers.add_parser("list", help="List configured DNS providers")
     p_list.set_defaults(func=cmd_list)
 
-    p_check = subparsers.add_parser(
-        "check", help="Probe reachability and latency of all providers"
-    )
+    p_check = subparsers.add_parser("check", help="Probe reachability and latency of all providers")
     p_check.set_defaults(func=cmd_check)
 
     p_set = subparsers.add_parser(
@@ -710,9 +713,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_set.add_argument("provider", help="Provider key (see `dnser list`)")
-    p_set.add_argument(
-        "--all", action="store_true", help="Apply to every saved connection profile"
-    )
+    p_set.add_argument("--all", action="store_true", help="Apply to every saved connection profile")
     p_set.add_argument(
         "--global",
         dest="global_",
@@ -724,9 +725,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="IFACE",
         help="Target a specific interface (default scope only)",
     )
-    p_set.add_argument(
-        "--no-ipv6", action="store_true", help="Skip IPv6 servers even if defined"
-    )
+    p_set.add_argument("--no-ipv6", action="store_true", help="Skip IPv6 servers even if defined")
     p_set.add_argument(
         "--fallback",
         metavar="SPEC",

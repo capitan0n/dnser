@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -391,9 +392,7 @@ class NetworkManagerBackend(Backend):
 
         if result.returncode != 0:
             stderr = result.stderr.strip() or "no error message"
-            raise BackendError(
-                f"Command failed ({result.returncode}): {' '.join(args)}\n{stderr}"
-            )
+            raise BackendError(f"Command failed ({result.returncode}): {' '.join(args)}\n{stderr}")
         return result.stdout
 
     def _run_all(self, commands: list[list[str]]) -> None:
@@ -436,9 +435,7 @@ class NetworkManagerBackend(Backend):
     def _dns_for_device(self, device: str) -> list[str]:
         """Return DNS servers currently in use on <device>."""
         try:
-            output = self._run(
-                ["nmcli", "-t", "-f", "IP4.DNS,IP6.DNS", "device", "show", device]
-            )
+            output = self._run(["nmcli", "-t", "-f", "IP4.DNS,IP6.DNS", "device", "show", device])
         except BackendError:
             return []
         servers: list[str] = []
@@ -507,9 +504,7 @@ class NetworkManagerBackend(Backend):
 
     def _connection_fields(self, conn: _Connection, fields: tuple[str, ...]) -> dict[str, str]:
         """Read a set of fields from a connection profile."""
-        output = self._run(
-            ["nmcli", "-t", "-f", ",".join(fields), "connection", "show", conn.uuid]
-        )
+        output = self._run(["nmcli", "-t", "-f", ",".join(fields), "connection", "show", conn.uuid])
         result: dict[str, str] = {}
         for line in output.strip().splitlines():
             key, sep, value = line.partition(":")
@@ -608,10 +603,8 @@ class NetworkManagerBackend(Backend):
         range, cable unplugged) and that must not fail the whole command,
         since the configuration itself was already applied.
         """
-        try:
+        with suppress(BackendError):
             self._run(["nmcli", "connection", "up", conn.uuid])
-        except BackendError:
-            pass
 
 
 def validate_global_conf(content: str) -> None:

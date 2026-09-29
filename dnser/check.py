@@ -102,7 +102,10 @@ def _check_one(provider: Provider) -> CheckResult:
     """Run cached + uncached probes for one provider. Never raises."""
     if not provider.ipv4:
         return CheckResult(
-            provider.key, ok=False, cached_ms=None, uncached_ms=None,
+            provider.key,
+            ok=False,
+            cached_ms=None,
+            uncached_ms=None,
             error="no IPv4 servers to probe",
         )
 
@@ -110,7 +113,10 @@ def _check_one(provider: Provider) -> CheckResult:
     # than mislead the user into thinking they are broken, skip the probe.
     if provider.requires_dot:
         return CheckResult(
-            provider.key, ok=True, cached_ms=None, uncached_ms=None,
+            provider.key,
+            ok=True,
+            cached_ms=None,
+            uncached_ms=None,
             error="DoT-only — use `dnser set <key> --dot` to try it",
         )
 
@@ -137,7 +143,10 @@ def _check_one(provider: Provider) -> CheckResult:
 
     if not samples:
         return CheckResult(
-            provider.key, ok=True, cached_ms=cached_ms, uncached_ms=None,
+            provider.key,
+            ok=True,
+            cached_ms=cached_ms,
+            uncached_ms=None,
             error=f"uncached failed: {last_error or 'unknown'}",
         )
 
@@ -150,9 +159,7 @@ def _check_one(provider: Provider) -> CheckResult:
             provider.key, ok=True, cached_ms=cached_ms, uncached_ms=average, error=note
         )
 
-    return CheckResult(
-        provider.key, ok=True, cached_ms=cached_ms, uncached_ms=average, error=None
-    )
+    return CheckResult(provider.key, ok=True, cached_ms=cached_ms, uncached_ms=average, error=None)
 
 
 def _probe(target_ip: str, qname: str) -> tuple[float | None, str | None]:
