@@ -31,3 +31,6 @@ Thumbs.db
 # dnser state
 *.backup
 state/
+
+#screenshots
+media/
